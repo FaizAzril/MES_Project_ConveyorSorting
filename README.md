@@ -1,215 +1,142 @@
-# MES Conveyor Sorting System – Visual Quality Inspection (Computer Vision)
+# MES Conveyor Sorting – Computer Vision System
 
-## 📋 Project Overview
-The **MES Conveyor Sorting System** is a prototype that performs **real‑time visual quality inspection** of cubes moving on a conveyor belt. A single **top‑view USB webcam** captures each cube, the Python‑based computer‑vision pipeline analyses the image, and the result is sent to an **ESP32** controller over **USB serial**.
+A standalone computer-vision quality-inspection system that uses a laptop webcam to inspect cube-shaped objects on a conveyor belt, classifying each object as **PERFECT**, **DEFECT**, or **INVALID**.
 
-- **Target object**: Cubes that should be uniformly **red** on the top face.
-- **Classification**:
-  - **PERFECT** – red coverage ≥ configurable threshold (default 98 %).
-  - **DEFECT** – any deviation (different colour, coloured patches, or non‑red surface).
-- **Communication**: Python sends a JSON line to the ESP32; ESP32 replies with an ACK.
-
-> **Note** – The ESP32 firmware (Arduino/PlatformIO) is **not** part of this repository; it will be developed later.
+> **Scope**: This module covers only the Computer Vision pipeline. IoT, ESP32, Firebase, and serial communication are out of scope for this branch.
 
 ---
 
-## 🗂 Repository Structure
-```
-MES_Project_ConveyorSorting/
-│
-├─ config.py                 # Global, user‑editable parameters
-├─ requirements.txt          # Python dependencies
-├─ README.md                 # **You are here**
-│
-├─ camera/                   # Camera handling utilities
-│   ├─ __init__.py
-│   └─ camera_manager.py     # Threaded VideoCapture with graceful shutdown
-│
-├─ vision/                   # Core CV modules
-│   ├─ __init__.py
-│   ├─ object_detector.py    # Colour‑agnostic cube detection (background subtraction)
-│   ├─ roi_manager.py        # Configurable ROI handling
-│   ├─ red_segmentation.py   # HSV red mask (to be implemented)
-│   ├─ quality_inspector.py  # Red‑coverage calc & classification (to be implemented)
-│   └─ object_tracker.py     # Event‑ID generation & duplicate suppression (to be implemented)
-│
-├─ communication/            # Serial communication with ESP32
-│   ├─ __init__.py
-│   └─ serial_client.py      # Non‑blocking JSON‑line protocol (stub)
-│
-├─ models/                   # Data‑model definitions
-│   └─ inspection_event.py   # InspectionEvent dataclass (stub)
-│
-├─ dataset/                  # Image dataset for future model training
-│   ├─ perfect/   (empty – collect with the new tool)
-│   └─ defect/    (empty – collect with the new tool)
-│
-├─ tests/                    # Unit‑test skeletons (future implementation)
-│   ├─ __init__.py
-│   └─ …
-│
-├─ K1_MES_CONVEYOR SORTING SYSTEM BERBASIS IoT DAN MES.docx   # Project report (reference)
-└─ K1_MES_CONVEYOR SORTING SYSTEM BERBASIS IoT DAN MES.pdf   # Same report in PDF
-```
+## Project Structure
 
-**All legacy scripts (`camera_test.py`, `green_detection.py`, `object_detection.py`, `collect_dataset.py`, `roi_camera.py`) have been removed** because their functionality is now provided by the modular code above.
+```
+UAS/
+├── camera/
+│   ├── __init__.py
+│   └── camera_manager.py       # Threaded webcam capture
+├── vision/
+│   ├── __init__.py
+│   ├── background_calibrator.py # Median multi-frame background calibration
+│   ├── object_detector.py      # Colour-independent background-subtraction detector
+│   ├── quality_inspector.py    # PERFECT / DEFECT / INVALID classifier
+│   ├── red_segmentation.py     # HSV two-range red mask
+│   ├── roi_manager.py          # ROI crop and coordinate management
+│   ├── object_tracker.py       # Single-object state-machine event gate
+│   └── inspection_history.py  # In-memory bounded inspection log
+├── tests/
+│   ├── test_quality_inspector.py  # Phase 1 unit tests (26 tests)
+│   ├── test_object_detector.py    # Detector unit tests
+│   └── test_integration.py        # End-to-end synthetic pipeline tests
+├── config.py                   # All tuneable parameters
+├── main.py                     # Application entry point
+├── requirements.txt
+└── README.md
+```
 
 ---
 
-## ⚙️ Installation
-1. **Clone the repo** and switch to the development branch:
-   ```bash
-   git clone https://github.com/FaizAzril/MES_Project_ConveyorSorting.git
-   cd MES_Project_ConveyorSorting
-   git checkout computer-vision
-   ```
-2. **Create a virtual environment** (highly recommended on Windows):
-   ```powershell
-   python -m venv .venv
-   .\.venv\Scripts\Activate.ps1   # PowerShell
-   ```
-3. **Install required packages**:
-   ```bash
-   pip install -r requirements.txt
-   ```
-4. **Configure the system** – edit `config.py` if you need to change:
-   - Camera index (`CAMERA_INDEX`)
-   - Resolution (`CAMERA_WIDTH`, `CAMERA_HEIGHT`)
-   - ROI ratios
-   - HSV red thresholds
-   - Serial port (`SERIAL_PORT`) and baudrate
-   - Red‑coverage threshold (`RED_COVERAGE_THRESHOLD`)
+## Installation
 
----
-
-## 🎞 Running the Application (Phase 1 – Core Modules)
-The full inspection pipeline will be launched via `main.py` (to be added in a later phase). For now you can test the individual building blocks:
-
-### 1. Camera sanity‑check
-```python
-from camera.camera_manager import CameraManager
-
-cam = CameraManager()
-if cam.start():
-    import time
-    time.sleep(2)   # grab a couple of frames
-    cam.stop()
-else:
-    print("Unable to open camera – check CAMERA_INDEX in config.py")
-```
-
-### 2. Object detection demo
-```python
-import cv2
-from camera.camera_manager import CameraManager
-from vision.object_detector import ObjectDetector
-from vision.roi_manager import ROIManger
-
-cam = CameraManager()
-cam.start()
-obj_det = ObjectDetector()
-
-while True:
-    frame = cam.get_frame()
-    if frame is None:
-        continue
-    boxes = obj_det.detect(frame)
-    for (x, y, w, h) in boxes:
-        cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-    cv2.imshow("Detection Demo", frame)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
-
-cam.stop()
-cv2.destroyAllWindows()
-```
-
-When the full pipeline (`red_segmentation`, `quality_inspector`, `object_tracker`, `serial_client`) is ready, a single `python main.py` will perform the complete inspection loop.
-
----
-
-## 📂 Dataset Collection (Phase 2)
-A new dataset collector will store images under `dataset/perfect/` and `dataset/defect/`.
-- Press **P** to save the current ROI crop as a **perfect** sample.
-- Press **D** to save it as a **defect** sample.
-- Press **Q** to quit.
-The script will automatically create non‑colliding filenames and display the number of images stored for each class.
-*(The collector script will be added in a later commit.)*
-
----
-
-## 🔌 Serial Communication Protocol (Python ↔ ESP32)
-All messages are **single‑line JSON** terminated by a newline (`\n`).
-### Outgoing inspection result
-```json
-{
-  "protocol_version": 1,
-  "type": "inspection_result",
-  "event_id": "OBJ-000001",
-  "classification": "PERFECT",
-  "red_coverage": 0.995,
-  "red_pixels": 9950,
-  "object_pixels": 10000,
-  "timestamp": "2026-11-20T14:45:00+07:00"
-}
-```
-### Incoming ACK (ESP32 → Python)
-```json
-{
-  "protocol_version": 1,
-  "type": "ack",
-  "event_id": "OBJ-000001",
-  "status": "accepted"
-}
-```
-The Python side will:
-1. Queue each inspection result.
-2. Send it over the serial port (default `COM3`, 115200 bps).
-3. Wait for an ACK (timeout configurable via `SERIAL_TIMEOUT`).
-4. Retry up to `SERIAL_MAX_RETRIES` before marking the event as failed.
-5. Continue processing frames **without blocking**.
-
----
-
-## 🧪 Testing
-The `tests/` directory contains skeleton unit‑tests that will be fleshed out in future phases:
-- `test_red_segmentation.py` – synthetic red/blue/yellow images.
-- `test_quality_inspector.py` – verifies red‑coverage calculation and classification.
-- `test_event_manager.py` – unique ID generation and duplicate suppression.
-- `test_serial_protocol.py` – JSON serialization, ACK parsing, retry logic.
-Run them with:
 ```bash
-python -m unittest discover -s tests
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+pip install -r requirements.txt
 ```
-All current tests pass (they are placeholders).
 
 ---
 
-## 🚧 Current Limitations & Next Steps
-| Limitation | Planned improvement |
-|------------|----------------------|
-| No `red_segmentation.py` implementation yet | Add HSV masking, combine two hue ranges, expose configurable thresholds. |
-| No quality‑inspection logic | Compute red coverage, apply threshold, return `PERFECT`/`DEFECT`. |
-| No event tracking | Generate unique IDs, keep a short‑term history to avoid duplicate events. |
-| Serial client is a stub | Implement non‑blocking queue, JSON line protocol, ACK handling, retries. |
-| No `main.py` orchestrator | Build a single entry‑point that wires camera → detector → ROI → mask → segmentation → classification → serial. |
-| No dataset collector script | Provide a user‑friendly CLI that saves crops into `dataset/perfect/` and `dataset/defect/`. |
-| Tests are placeholders | Write synthetic‑image tests for colour detection, coverage, and protocol handling. |
+## Configuration (`config.py`)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `CAMERA_INDEX` | `1` | Webcam index (0 = built-in, 1 = first external) |
+| `CAMERA_WIDTH` | `640` | Capture width in pixels |
+| `CAMERA_HEIGHT` | `480` | Capture height in pixels |
+| `ROI_X_START_RATIO` | `0.25` | ROI left edge as fraction of frame width |
+| `ROI_X_END_RATIO` | `0.75` | ROI right edge |
+| `ROI_Y_START_RATIO` | `0.20` | ROI top edge as fraction of frame height |
+| `ROI_Y_END_RATIO` | `0.80` | ROI bottom edge |
+| `MIN_OBJECT_AREA` | `800` | Minimum contour area (px²) to be an object |
+| `CALIB_FRAME_COUNT` | `30` | Frames captured to build median background |
+| `CALIB_DIFF_THRESHOLD` | `30` | Pixel brightness threshold for background subtraction |
+| `GATE_CONFIRM_FRAMES` | `5` | Consecutive frames with object before inspection fires |
+| `GATE_CLEAR_FRAMES` | `10` | Empty frames before gate resets to READY |
 
 ---
 
-## 🤝 Contributing
-Feel free to fork, create a feature branch, and submit pull requests. When adding new modules, keep the **separation‑of‑concerns** principle:
-- Camera → `camera/`
-- Vision → `vision/`
-- Communication → `communication/`
-- Data models → `models/`
+## Running the Application
+
+```bash
+python main.py
+```
+
+**Startup sequence:**
+
+1. Camera opens.
+2. Yellow banner prompts you to **keep the conveyor empty**.
+3. Application collects `CALIB_FRAME_COUNT` frames and computes a median background.
+4. Normal inspection loop begins.
+
+**Keyboard shortcuts:**
+
+| Key | Action |
+|-----|--------|
+| `Q` or `Esc` | Quit |
+| `B` | Recalibrate background (clear conveyor first) |
+| `D` | Toggle debug overlay (object mask) |
 
 ---
 
-## 📜 License
-The project is released under the **MIT License** – see the `LICENSE` file for details.
+## Background Calibration
+
+Calibration captures `CALIB_FRAME_COUNT` (default 30) frames while the conveyor is empty and computes the **per-pixel median** to build a robust background model. This tolerates minor belt motion and lighting flicker.
+
+Re-calibrate (press **B**) whenever:
+- Lighting conditions change significantly.
+- The camera is moved.
+- Belt texture changes.
 
 ---
 
-*End of README*
+## Classification Rules
+
+| Classification | Condition |
+|----------------|-----------|
+| `PERFECT` | All foreground pixels inside the object mask are red (`non_red_pixels == 0`) |
+| `DEFECT` | At least one foreground pixel is not red |
+| `INVALID` | Input is `None`, empty, wrong type, or object mask is empty |
+
+- Background pixels **outside** the object mask are never counted.
+- `object_pixels` = `cv2.countNonZero(mask_bin)` (not bounding-box area).
+- `red_pixels` = `cv2.countNonZero(bitwise_and(red_mask, mask_bin))`.
+
+---
+
+## Running Tests
+
+```bash
+# All tests (Phase 1 unit + integration)
+python -m unittest discover -s tests -v
+
+# Phase 1 quality inspector only
+python -m unittest tests.test_quality_inspector -v
+
+# Integration tests only
+python -m unittest tests.test_integration -v
+```
+
+---
+
+## Camera Selection
+
+If the wrong camera opens, change `CAMERA_INDEX` in `config.py`:
+- `0` = built-in webcam
+- `1` = first external USB webcam
+
+---
+
+## Limitations
+
+- Inspection only analyses the **top surface** of the cube.
+- One cube at a time is supported (single-object gate).
+- Classification is based on colour only (red = PERFECT, any other = DEFECT).
+- Hardware IoT integration (ESP32, servo, Firebase) is out of scope for this branch.

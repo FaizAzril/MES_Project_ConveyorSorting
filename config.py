@@ -40,3 +40,15 @@ EVENT_ID_PAD = 6
 
 # Misc
 DEBUG = True  # set False to reduce console output
+
+# Background calibration
+CALIB_FRAME_COUNT = 30        # number of frames to capture for median background
+CALIB_DIFF_THRESHOLD = 30     # pixel threshold for background subtraction
+
+# Event gate
+GATE_CONFIRM_FRAMES = 5       # consecutive frames required before inspection
+GATE_CLEAR_FRAMES = 10        # frames with no detection to return to READY
+GATE_MARGIN_RATIO = 0.05      # fraction of ROI edge that counts as "not fully inside"
+
+# Inspection history
+HISTORY_MAX_SIZE = 100        # max inspection records kept in memory

@@ -29,13 +29,22 @@ class CameraManager:
 
     def _open_camera(self) -> bool:
         backend = getattr(cv2, config.CAMERA_BACKEND, None) if getattr(config, "CAMERA_BACKEND", None) else None
-        if backend:
-            self.cap = cv2.VideoCapture(config.CAMERA_INDEX, backend)
-        else:
-            self.cap = cv2.VideoCapture(config.CAMERA_INDEX)
-        if not self.cap.isOpened():
-            _logger.error("Failed to open camera index %s", config.CAMERA_INDEX)
+        try:
+            if backend is not None:
+                self.cap = cv2.VideoCapture(config.CAMERA_INDEX, backend)
+            else:
+                self.cap = cv2.VideoCapture(config.CAMERA_INDEX)
+        except Exception as e:
+            _logger.error("Exception opening camera index %s: %s", config.CAMERA_INDEX, e)
             return False
+
+        if self.cap is None or not self.cap.isOpened():
+            _logger.error("Failed to open camera index %s", config.CAMERA_INDEX)
+            if self.cap is not None:
+                self.cap.release()
+                self.cap = None
+            return False
+
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
         _logger.info("Camera opened (index=%s, resolution=%dx%d)", config.CAMERA_INDEX, config.CAMERA_WIDTH, config.CAMERA_HEIGHT)
@@ -43,8 +52,11 @@ class CameraManager:
 
     def _capture_loop(self):
         while self.running:
+            if self.cap is None or not self.cap.isOpened():
+                time.sleep(0.05)
+                continue
             ret, frame = self.cap.read()
-            if not ret:
+            if not ret or frame is None:
                 _logger.warning("Failed to read frame from camera")
                 time.sleep(0.01)
                 continue
@@ -64,11 +76,22 @@ class CameraManager:
 
     def stop(self):
         self.running = False
-        if self._thread:
-            self._thread.join(timeout=2)
-        if self.cap:
-            self.cap.release()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+        self._thread = None
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception as e:
+                _logger.warning("Error releasing camera: %s", e)
+            self.cap = None
+        with self._lock:
+            self.frame = None
         _logger.info("Camera released")
+
+    @property
+    def is_opened(self) -> bool:
+        return self.cap is not None and self.cap.isOpened()
 
     def get_frame(self) -> Optional[any]:
         with self._lock:
@@ -79,4 +102,7 @@ class CameraManager:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+
+    def __del__(self):
         self.stop()

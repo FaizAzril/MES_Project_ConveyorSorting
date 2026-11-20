@@ -48,22 +48,7 @@ def get_red_mask(frame: np.ndarray) -> np.ndarray:
     # Gabungkan kedua mask
     mask = cv2.bitwise_or(mask1, mask2)
 
-    # Pembersihan noise
-    kernel = np.ones((3, 3), np.uint8)
-
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_OPEN,
-        kernel
-    )
-
-    mask = cv2.morphologyEx(
-        mask,
-        cv2.MORPH_CLOSE,
-        kernel
-    )
-
-    # PENTING: Kembalikan hasil mask
+    # Kembalikan hasil mask tanpa pembersihan noise
     return mask
 
 

@@ -1,71 +1,82 @@
-import cv2
-import numpy as np
+"""Event gate – state machine that fires one inspection per object."""
 import logging
-from typing import Dict, Tuple, List
+import uuid
 import config
 
 _logger = logging.getLogger(__name__)
 
-class ObjectTracker:
-    """Tracks objects across frames and generates unique event IDs.
+# States
+READY = "READY"
+OBJECT_DETECTED = "OBJECT_DETECTED"
+INSPECTION_COMPLETED = "INSPECTION_COMPLETED"
+WAIT_CLEAR = "WAIT_CLEAR"
 
-    Simple centroid‑based tracking suitable for a single object in the ROI.
-    Maintains a dictionary ``active`` mapping event_id -> centroid.
-    When a new detection appears far from any existing centroid, a new
-    event_id is created. When a previously seen object disappears for more
-    than ``max_missing`` frames it is removed.
+
+class EventGate:
+    """Single-object state machine.
+
+    Call update(detected) each frame with bool whether a valid object is
+    present in the ROI. When the gate fires it returns a unique event_id
+    string; otherwise returns None.
     """
 
     def __init__(self):
-        self.active: Dict[str, Tuple[int, int]] = {}
-        self.missing_counter: Dict[str, int] = {}
-        self.next_id: int = 1
-        self.max_missing: int = 10
-        self.distance_thresh: float = 50.0  # pixels
+        self.state = READY
+        self._confirm_count = 0
+        self._clear_count = 0
+        self.event_id: str = ""
+        self._next_seq = 1
 
-    def _centroid(self, box: Tuple[int, int, int, int]) -> Tuple[int, int]:
-        x, y, w, h = box
-        return (int(x + w / 2), int(y + h / 2))
+    def _new_id(self) -> str:
+        seq = f"{config.EVENT_ID_PREFIX}{self._next_seq:0{config.EVENT_ID_PAD}d}"
+        self._next_seq += 1
+        return seq
 
-    def update(self, boxes: List[Tuple[int, int, int, int]]) -> Dict[str, Tuple[int, int, int, int]]:
-        """Update tracker with the current list of bounding boxes.
+    def update(self, detected: bool) -> str | None:
+        """Feed detection state for one frame.
 
-        Returns a mapping ``event_id -> box`` for objects that are newly
-        detected (i.e., have not been reported before). Existing objects are
-        ignored so that the main loop does not send duplicate events.
+        Returns a new event_id string when an inspection should be triggered,
+        otherwise returns None.
         """
-        assignments: Dict[str, Tuple[int, int, int, int]] = {}
-        used_ids = set()
-        # First, try to match each detection to an existing active object
-        for box in boxes:
-            c = self._centroid(box)
-            best_id = None
-            best_dist = float('inf')
-            for eid, centroid in self.active.items():
-                dist = np.linalg.norm(np.array(c) - np.array(centroid))
-                if dist < self.distance_thresh and dist < best_dist:
-                    best_dist = dist
-                    best_id = eid
-            if best_id and best_id not in used_ids:
-                # Existing object – update centroid and reset missing counter
-                self.active[best_id] = c
-                self.missing_counter[best_id] = 0
-                used_ids.add(best_id)
-                # No new event for already known object
+        if self.state == READY:
+            if detected:
+                self._confirm_count += 1
+                if self._confirm_count >= config.GATE_CONFIRM_FRAMES:
+                    self.state = OBJECT_DETECTED
+                    self.event_id = self._new_id()
+                    self._confirm_count = 0
+                    _logger.info("Gate FIRED: %s", self.event_id)
+                    return self.event_id
             else:
-                # New object – assign new ID
-                eid = f"{config.EVENT_ID_PREFIX}{self.next_id:0{config.EVENT_ID_PAD}d}"
-                self.next_id += 1
-                self.active[eid] = c
-                self.missing_counter[eid] = 0
-                assignments[eid] = box
-                used_ids.add(eid)
-        # Increment missing counters for objects not seen this frame
-        for eid in list(self.active.keys()):
-            if eid not in used_ids:
-                self.missing_counter[eid] += 1
-                if self.missing_counter[eid] > self.max_missing:
-                    # Remove stale entry
-                    del self.active[eid]
-                    del self.missing_counter[eid]
-        return assignments
+                self._confirm_count = 0
+
+        elif self.state == OBJECT_DETECTED:
+            # Inspection was triggered; transition immediately
+            self.state = INSPECTION_COMPLETED
+
+        elif self.state == INSPECTION_COMPLETED:
+            if not detected:
+                self._clear_count += 1
+                if self._clear_count >= config.GATE_CLEAR_FRAMES:
+                    self.state = WAIT_CLEAR
+            else:
+                self._clear_count = 0
+
+        elif self.state == WAIT_CLEAR:
+            self.state = READY
+            self._clear_count = 0
+            _logger.info("Gate RESET to READY")
+
+        return None
+
+    def mark_inspection_done(self):
+        """Call after inspection result is recorded to advance state."""
+        if self.state == OBJECT_DETECTED:
+            self.state = INSPECTION_COMPLETED
+            self._clear_count = 0
+
+    def reset(self):
+        self.state = READY
+        self._confirm_count = 0
+        self._clear_count = 0
+        self.event_id = ""

@@ -30,7 +30,7 @@ class TestQualityInspector(unittest.TestCase):
         self.assertEqual(res["classification"], "PERFECT")
         self.assertAlmostEqual(res["red_coverage"], 1.0)
 
-    def test_perfect_98_percent(self):
+    def test_defect_98_percent(self):
         # 98% red coverage (threshold is 0.98)
         size = 100
         roi = np.full((size, size, 3), (0,0,255), dtype=np.uint8)
@@ -40,7 +40,7 @@ class TestQualityInspector(unittest.TestCase):
         # set top-left corner
         roi[:int(np.sqrt(num)), :int(np.sqrt(num))] = (255,0,0)
         res = self.inspector.inspect(roi, mask)
-        self.assertEqual(res["classification"], "PERFECT")
+        self.assertEqual(res["classification"], "DEFECT")
         self.assertGreaterEqual(res["red_coverage"], config.RED_COVERAGE_THRESHOLD)
 
     # ---------- DEFECT ----------
@@ -75,13 +75,15 @@ class TestQualityInspector(unittest.TestCase):
     def test_defect_red_with_blue_patch(self):
         size = 100
         roi = np.full((size, size, 3), (0,0,255), dtype=np.uint8)  # red
-        # add blue patch covering 5% area
-        patch = int(size*0.05)
-        roi[:patch, :patch] = (255,0,0)
+        # add blue patch covering 5% area (500 pixels)
+        patch_pixels = int(size*size*0.05)
+        side = int(np.sqrt(patch_pixels))
+        roi[:side, :side] = (255,0,0)
         mask = np.full((size,size), 255, dtype=np.uint8)
         res = self.inspector.inspect(roi, mask)
         self.assertEqual(res["classification"], "DEFECT")
         self.assertLess(res["red_coverage"], config.RED_COVERAGE_THRESHOLD)
+
 
     def test_defect_just_below_threshold(self):
         size = 100
@@ -89,12 +91,12 @@ class TestQualityInspector(unittest.TestCase):
         mask = np.full((size,size), 255, dtype=np.uint8)
         # make coverage just below threshold (e.g., 0.979)
         target = config.RED_COVERAGE_THRESHOLD - 0.001
-        red_needed = int(size*size*target)
         total = size*size
+        red_needed = int(total * target)
         non_red = total - red_needed
-        # set a block of non‑red pixels
-        side = int(np.sqrt(non_red))
-        roi[:side, :side] = (255,0,0)
+        # set exact number of non-red pixels to blue
+        flat = roi.reshape(-1,3)
+        flat[:non_red] = (255,0,0)
         res = self.inspector.inspect(roi, mask)
         self.assertEqual(res["classification"], "DEFECT")
         self.assertLess(res["red_coverage"], config.RED_COVERAGE_THRESHOLD)
@@ -123,7 +125,7 @@ class TestQualityInspector(unittest.TestCase):
         cv2.rectangle(mask, (30,30), (70,70), 255, -1)
         res = self.inspector.inspect(roi, mask)
         # object_pixels = area of rectangle
-        self.assertEqual(res["object_pixels"], (70-30)*(70-30))
+        self.assertEqual(res["object_pixels"], cv2.countNonZero(mask))
         self.assertAlmostEqual(res["red_coverage"], 1.0)
         self.assertEqual(res["classification"], "PERFECT")
 

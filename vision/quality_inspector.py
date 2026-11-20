@@ -50,9 +50,11 @@ class QualityInspector:
 
         # Normalize mask to binary 0/255 uint8
         mask_bin = (object_mask > 0).astype(np.uint8) * 255
+        # Count foreground pixels in the object mask
         object_pixels = int(cv2.countNonZero(mask_bin))
+
         if object_pixels == 0:
-            _logger.warning("Mask contains no foreground pixels.")
+
             return {"red_pixels": 0, "object_pixels": 0, "red_coverage": 0.0, "classification": "INVALID"}
 
         # Red segmentation on ROI
@@ -60,16 +62,23 @@ class QualityInspector:
         # Ensure masks have the same shape before intersection
         if red_mask.shape != mask_bin.shape:
             _logger.warning("Red mask and object mask dimensions do not match.")
-            return {"red_pixels": 0, "object_pixels": object_pixels, "red_coverage": 0.0, "classification": "INVALID"}
+            return {"red_pixels": 0, "object_pixels": object_pixels, "red_coverage": 0.0, "non_red_pixels": object_pixels, "classification": "INVALID"}
         # Intersection of red and object mask using NumPy for safety
         intersect = np.bitwise_and(red_mask, mask_bin)
-        red_pixels = int(cv2.countNonZero(intersect))
 
-        red_coverage = red_pixels / float(object_pixels) if object_pixels else 0.0
-        classification = "PERFECT" if red_coverage >= self.coverage_threshold else "DEFECT"
+        red_pixels = int(cv2.countNonZero(intersect))
+        non_red_pixels = object_pixels - red_pixels
+        if red_pixels == object_pixels:
+            red_coverage = 1.0
+        else:
+            red_coverage = red_pixels / float(object_pixels)
+
+
+        classification = "PERFECT" if non_red_pixels == 0 else "DEFECT"
         _logger.debug(
-            "QualityInspection: red=%d / object=%d => %.3f => %s",
+            "QualityInspection: red=%d / non_red=%d / object=%d => %.3f => %s",
             red_pixels,
+            non_red_pixels,
             object_pixels,
             red_coverage,
             classification,
@@ -78,5 +87,6 @@ class QualityInspector:
             "red_pixels": red_pixels,
             "object_pixels": object_pixels,
             "red_coverage": red_coverage,
+            "non_red_pixels": non_red_pixels,
             "classification": classification,
         }
