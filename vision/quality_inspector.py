@@ -1,92 +1,94 @@
+"""Quality rule: red without pattern = PERFECT, anything else = DEFECT."""
 import logging
-import config
+from typing import Any, Dict
+
 import cv2
 import numpy as np
-from typing import Dict, Any
-from .red_segmentation import get_red_mask
 
+import config
+from .red_segmentation import get_red_mask
 
 _logger = logging.getLogger(__name__)
 
 
-class QualityInspector:
-    """Computes red coverage and classification for a given ROI and mask.
+def _invalid(object_pixels: int = 0) -> Dict[str, Any]:
+    return {
+        "red_pixels": 0,
+        "object_pixels": object_pixels,
+        "red_coverage": 0.0,
+        "non_red_pixels": object_pixels,
+        "largest_defect_area": 0,
+        "classification": "INVALID",
+    }
 
-    The API expects:
-    * ``roi`` – BGR image region of the detected object.
-    * ``object_mask`` – binary mask (0/255 or 0/1) with the same height/width as ``roi``.
+
+def shrink_mask(mask: np.ndarray, pixels: int = None) -> np.ndarray:
+    """Erode a binary object mask so edge/shadow pixels are excluded."""
+    pixels = config.MASK_ERODE_PX if pixels is None else pixels
+    if pixels <= 0:
+        return mask
+    kernel = np.ones((2 * pixels + 1, 2 * pixels + 1), np.uint8)
+    return cv2.erode((mask > 0).astype(np.uint8) * 255, kernel)
+
+
+class QualityInspector:
+    """Classify one object from its BGR crop and binary object mask.
+
+    * ``PERFECT`` – red coverage >= RED_COVERAGE_THRESHOLD and no non-red
+      region as large as DEFECT_MIN_BLOB_AREA (no pattern / spot).
+    * ``DEFECT``  – other colour, or red with a pattern.
+    * ``INVALID`` – bad input (empty mask, wrong shape, ...).
     """
 
     def __init__(self):
         self.coverage_threshold = config.RED_COVERAGE_THRESHOLD
+        self.min_blob_area = config.DEFECT_MIN_BLOB_AREA
 
     def inspect(self, roi: "np.ndarray", object_mask: "np.ndarray") -> Dict[str, Any]:
-        """Inspect an object and return inspection metrics.
-
-        Returns a dict with keys:
-        * ``red_pixels`` – number of red pixels inside the object.
-        * ``object_pixels`` – total non‑zero object pixels.
-        * ``red_coverage`` – red_pixels / object_pixels.
-        * ``classification`` – ``PERFECT``, ``DEFECT`` or ``INVALID``.
-        """
-
-
-        # ---------- Validation ----------
         if roi is None or object_mask is None:
-            _logger.warning("ROI or object mask is None.")
-            return {"red_pixels": 0, "object_pixels": 0, "red_coverage": 0.0, "classification": "INVALID"}
+            return _invalid()
         if not isinstance(roi, np.ndarray) or not isinstance(object_mask, np.ndarray):
-            _logger.warning("ROI and mask must be numpy arrays.")
-            return {"red_pixels": 0, "object_pixels": 0, "red_coverage": 0.0, "classification": "INVALID"}
+            return _invalid()
         if roi.size == 0 or object_mask.size == 0:
-            _logger.warning("Empty ROI or mask.")
-            return {"red_pixels": 0, "object_pixels": 0, "red_coverage": 0.0, "classification": "INVALID"}
+            return _invalid()
         if roi.ndim != 3 or roi.shape[2] != 3:
-            _logger.warning("ROI must be a BGR image with 3 channels.")
-            return {"red_pixels": 0, "object_pixels": 0, "red_coverage": 0.0, "classification": "INVALID"}
+            return _invalid()
         if object_mask.shape != roi.shape[:2]:
-            _logger.warning("Mask dimensions do not match ROI.")
-            return {"red_pixels": 0, "object_pixels": 0, "red_coverage": 0.0, "classification": "INVALID"}
+            return _invalid()
 
-        # Normalize mask to binary 0/255 uint8
         mask_bin = (object_mask > 0).astype(np.uint8) * 255
-        # Count foreground pixels in the object mask
         object_pixels = int(cv2.countNonZero(mask_bin))
-
         if object_pixels == 0:
+            return _invalid()
 
-            return {"red_pixels": 0, "object_pixels": 0, "red_coverage": 0.0, "classification": "INVALID"}
-
-        # Red segmentation on ROI
         red_mask = get_red_mask(roi)
-        # Ensure masks have the same shape before intersection
-        if red_mask.shape != mask_bin.shape:
-            _logger.warning("Red mask and object mask dimensions do not match.")
-            return {"red_pixels": 0, "object_pixels": object_pixels, "red_coverage": 0.0, "non_red_pixels": object_pixels, "classification": "INVALID"}
-        # Intersection of red and object mask using NumPy for safety
-        intersect = np.bitwise_and(red_mask, mask_bin)
-
-        red_pixels = int(cv2.countNonZero(intersect))
+        red_in_object = cv2.bitwise_and(red_mask, mask_bin)
+        red_pixels = int(cv2.countNonZero(red_in_object))
         non_red_pixels = object_pixels - red_pixels
-        if red_pixels == object_pixels:
-            red_coverage = 1.0
-        else:
-            red_coverage = red_pixels / float(object_pixels)
+        red_coverage = red_pixels / float(object_pixels)
 
+        # Largest connected non-red region inside the object = pattern / spot size.
+        non_red_mask = cv2.bitwise_and(cv2.bitwise_not(red_mask), mask_bin)
+        largest_defect_area = 0
+        if non_red_pixels:
+            count, _, stats, _ = cv2.connectedComponentsWithStats(non_red_mask, connectivity=8)
+            if count > 1:
+                largest_defect_area = int(stats[1:, cv2.CC_STAT_AREA].max())
 
-        classification = "PERFECT" if non_red_pixels == 0 else "DEFECT"
+        perfect = (
+            red_coverage >= self.coverage_threshold
+            and largest_defect_area < self.min_blob_area
+        )
+        classification = "PERFECT" if perfect else "DEFECT"
         _logger.debug(
-            "QualityInspection: red=%d / non_red=%d / object=%d => %.3f => %s",
-            red_pixels,
-            non_red_pixels,
-            object_pixels,
-            red_coverage,
-            classification,
+            "inspect: red=%d object=%d coverage=%.4f largest_defect=%d -> %s",
+            red_pixels, object_pixels, red_coverage, largest_defect_area, classification,
         )
         return {
             "red_pixels": red_pixels,
             "object_pixels": object_pixels,
             "red_coverage": red_coverage,
             "non_red_pixels": non_red_pixels,
+            "largest_defect_area": largest_defect_area,
             "classification": classification,
         }

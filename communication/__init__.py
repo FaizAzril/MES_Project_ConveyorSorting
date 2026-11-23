@@ -1,5 +1,5 @@
 """Communication helpers for MES Conveyor Sorting."""
 
-from .serial_client import SerialClient
+from .firebase_sync import FirebaseSync
 
-__all__ = ["SerialClient"]
+__all__ = ["FirebaseSync"]

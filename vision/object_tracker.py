@@ -23,6 +23,11 @@ class EventGate:
         self._next_seq = 1
         self._session_id = datetime.now().strftime("%y%m%d%H%M%S") + secrets.token_hex(2).upper()
 
+    @property
+    def session_id(self) -> str:
+        """Session part of the event IDs (time-ordered, so keys sort by time)."""
+        return self._session_id
+
     def _new_id(self) -> str:
         event_id = f"{config.EVENT_ID_PREFIX}{self._session_id}-{self._next_seq:0{config.EVENT_ID_PAD}d}"
         self._next_seq += 1

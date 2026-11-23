@@ -1,142 +1,177 @@
-# MES Conveyor Sorting – Computer Vision System
+# MES Conveyor Sorting System — Kamera + Firebase + ESP32
 
-A standalone computer-vision quality-inspection system that uses a laptop webcam to inspect cube-shaped objects on a conveyor belt, classifying each object as **PERFECT**, **DEFECT**, or **INVALID**.
+Prototipe Mini MES untuk conveyor satu jalur. Webcam memeriksa setiap balok,
+hasilnya dicatat ke Firebase Realtime Database, ESP32 menggerakkan servo SG90
+untuk menyortir, dan dashboard web menampilkan semuanya, termasuk **video kamera
+langsung di dalam dashboard**.
 
-> **Scope**: This module covers only the Computer Vision pipeline. IoT, ESP32, Firebase, and serial communication are out of scope for this branch.
+| Objek | Hasil | Aksi ESP32 | Wadah |
+|---|---|---|---|
+| Merah polos | **PERFECT** | servo diam (lurus) | BIN1 |
+| Merah bercorak / berbintik | **DEFECT** | servo membelokkan | BIN2 |
+| Warna selain merah | **DEFECT** | servo membelokkan | BIN2 |
+| Gagal dibaca | **INVALID** | servo membelokkan (aman) | BIN2 |
 
----
+## Arsitektur
 
-## Project Structure
+```
+Webcam ──► main.py (Python)
+             ├─ vision/        deteksi objek + inspeksi merah  ──► PERFECT / DEFECT
+             ├─ communication/ FirebaseSync  ──► /detections, /statistics, /vision, /session
+             └─ server/        http://127.0.0.1:8000
+                                 ├─ dashboard web (web-dashboard/dist)
+                                 ├─ /video_feed  (stream kamera di panel dashboard)
+                                 └─ /api/state, /api/control, /api/confirm
+Firebase RTDB ◄──► ESP32 (firmware/)  baca /detections, gerakkan SG90,
+                                      tulis sortAction + sortedAtMs, heartbeat /conveyor
+```
+
+Dashboard tidak memakai Firebase Web SDK. Semua datanya diambil dari `main.py`,
+yang mencerminkan isi Firebase (termasuk tulisan ESP32) lewat Admin SDK. Dengan
+begitu database tetap tertutup untuk publik.
+
+## Struktur
 
 ```
 UAS/
-├── camera/
-│   ├── __init__.py
-│   └── camera_manager.py       # Threaded webcam capture
+├── main.py                      # satu-satunya entry point
+├── config.py                    # semua parameter (kamera, ROI, aturan merah, server)
+├── camera/camera_manager.py     # capture webcam (thread)
 ├── vision/
-│   ├── __init__.py
-│   ├── background_calibrator.py # Median multi-frame background calibration
-│   ├── object_detector.py      # Colour-independent background-subtraction detector
-│   ├── quality_inspector.py    # PERFECT / DEFECT / INVALID classifier
-│   ├── red_segmentation.py     # HSV two-range red mask
-│   ├── roi_manager.py          # ROI crop and coordinate management
-│   ├── object_tracker.py       # Single-object state-machine event gate
-│   └── inspection_history.py  # In-memory bounded inspection log
-├── tests/
-│   ├── test_quality_inspector.py  # Phase 1 unit tests (26 tests)
-│   ├── test_object_detector.py    # Detector unit tests
-│   └── test_integration.py        # End-to-end synthetic pipeline tests
-├── config.py                   # All tuneable parameters
-├── main.py                     # Application entry point
-├── requirements.txt
-└── README.md
+│   ├── pipeline.py              # loop kamera: kalibrasi → deteksi → gate → inspeksi → stream
+│   ├── quality_inspector.py     # aturan PERFECT / DEFECT / INVALID
+│   ├── red_segmentation.py      # mask merah HSV (2 rentang hue)
+│   ├── object_detector.py       # background subtraction
+│   ├── background_calibrator.py # median 30 frame belt kosong
+│   ├── object_tracker.py        # EventGate: satu event per balok, ID unik
+│   ├── roi_manager.py
+│   └── inspection_history.py
+├── communication/firebase_sync.py
+├── server/web_server.py
+├── web-dashboard/               # React + Vite (sumber dashboard)
+├── firmware/ConveyorSorting_ESP32/
+│   ├── ConveyorSorting_ESP32.ino
+│   └── secrets.example.h        # salin ke secrets.h
+├── firebase/database.rules.json
+└── tests/
 ```
 
----
+## Menjalankan
 
-## Installation
+### 1. Python
 
-```bash
+```powershell
 python -m venv .venv
-.venv\Scripts\activate        # Windows
+.venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
----
+### 2. Build dashboard (sekali, atau setiap kali `web-dashboard/src` diubah)
 
-## Configuration (`config.py`)
+```powershell
+cd web-dashboard
+npm install
+npm run build
+cd ..
+```
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `CAMERA_INDEX` | `1` | Webcam index (0 = built-in, 1 = first external) |
-| `CAMERA_WIDTH` | `640` | Capture width in pixels |
-| `CAMERA_HEIGHT` | `480` | Capture height in pixels |
-| `ROI_X_START_RATIO` | `0.25` | ROI left edge as fraction of frame width |
-| `ROI_X_END_RATIO` | `0.75` | ROI right edge |
-| `ROI_Y_START_RATIO` | `0.20` | ROI top edge as fraction of frame height |
-| `ROI_Y_END_RATIO` | `0.80` | ROI bottom edge |
-| `MIN_OBJECT_AREA` | `800` | Minimum contour area (px²) to be an object |
-| `CALIB_FRAME_COUNT` | `30` | Frames captured to build median background |
-| `CALIB_DIFF_THRESHOLD` | `30` | Pixel brightness threshold for background subtraction |
-| `GATE_CONFIRM_FRAMES` | `5` | Consecutive frames with object before inspection fires |
-| `GATE_CLEAR_FRAMES` | `10` | Empty frames before gate resets to READY |
+### 3. Firebase (agar data sampai ke ESP32)
 
----
+1. Buat Realtime Database di Firebase Console.
+2. Salin `.env.example` menjadi `.env`, lalu isi `FIREBASE_DATABASE_URL`.
+3. Unduh service-account key (Project settings → Service accounts → Generate new
+   private key), simpan sebagai `serviceAccountKey.json` di folder proyek. File ini
+   sudah di-ignore git, jadi **jangan dibagikan**.
+4. Terapkan isi `firebase/database.rules.json` di tab **Rules** (baca/tulis publik
+   ditolak; Python Admin SDK dan ESP32 yang memakai database secret tetap bisa).
 
-## Running the Application
+Tanpa langkah ini sistem tetap berjalan dalam mode lokal: kamera, inspeksi, dan
+dashboard bekerja, tetapi ESP32 tidak menerima data.
 
-```bash
+### 4. Jalankan sistem
+
+```powershell
 python main.py
 ```
 
-**Startup sequence:**
+Browser terbuka ke `http://127.0.0.1:8000`. Kamera langsung menyala lalu
+mengkalibrasi latar belakang, jadi **kosongkan conveyor selama kalibrasi**.
+Tombol Start/Stop, Recalibrate, dan Debug ada di panel kamera. Hentikan dengan `Ctrl+C`.
 
-1. Camera opens.
-2. Yellow banner prompts you to **keep the conveyor empty**.
-3. Application collects `CALIB_FRAME_COUNT` frames and computes a median background.
-4. Normal inspection loop begins.
+Opsi: `python main.py --no-browser --port 8000 --host 0.0.0.0` (pakai `0.0.0.0`
+agar dashboard bisa dibuka dari perangkat lain di jaringan yang sama).
 
-**Keyboard shortcuts:**
+### 5. ESP32
 
-| Key | Action |
-|-----|--------|
-| `Q` or `Esc` | Quit |
-| `B` | Recalibrate background (clear conveyor first) |
-| `D` | Toggle debug overlay (object mask) |
+1. Arduino IDE: pasang board **esp32 by Espressif**, library **ArduinoJson (v7)**
+   dan **ESP32Servo**.
+2. Salin `firmware/ConveyorSorting_ESP32/secrets.example.h` menjadi `secrets.h`,
+   lalu isi Wi-Fi, URL database, dan *database secret*.
+   Jika `FIREBASE_AUTH` dibiarkan kosong, ESP32 hanya bisa mengakses database
+   selama rules masih terbuka. Setelah `firebase/database.rules.json` dipasang,
+   ESP32 akan mendapat 401 sampai database secret diisi.
+3. Ukur waktu tempuh balok dari tengah ROI kamera ke lengan servo (uji U3), lalu
+   isi `TRAVEL_TIME_MS` (t = L / v). Nilai servo (`HOME_ANGLE` 90°, `DIVERT_ANGLE`
+   180°, pulsa 1000–2000 µs, tahan 700 ms, kembali 500 ms) diambil dari firmware
+   serial lama yang sudah diuji di bench. Tetap periksa saat uji U4.
+4. Upload. Serial Monitor 115200 menampilkan event, aksi servo, dan status Wi-Fi.
 
----
+Servo diberi daya dari buck 5 V tersendiri, GND disatukan dengan ESP32, dan sinyal
+dihubungkan ke GPIO 18. ESP32 dan PC harus tersinkron NTP (Windows: *Settings →
+Time → Sync now*), karena waktu servo dihitung dari `detectedAtMs` yang dikirim PC.
 
-## Background Calibration
+## Aturan inspeksi (config.py)
 
-Calibration captures `CALIB_FRAME_COUNT` (default 30) frames while the conveyor is empty and computes the **per-pixel median** to build a robust background model. This tolerates minor belt motion and lighting flicker.
+Balok **PERFECT** hanya jika kedua syarat ini terpenuhi:
 
-Re-calibrate (press **B**) whenever:
-- Lighting conditions change significantly.
-- The camera is moved.
-- Belt texture changes.
+* `red_coverage >= RED_COVERAGE_THRESHOLD` (default 0.98), dan
+* tidak ada area non-merah yang tersambung seluas `DEFECT_MIN_BLOB_AREA` piksel
+  atau lebih (default 40). Inilah yang menangkap corak/bintik kecil.
 
----
+Mask objek dikecilkan `MASK_ERODE_PX` piksel agar tepi, bayangan, dan belt tidak
+ikut terhitung. Ketiga nilai ini perlu disetel dengan balok asli di bawah
+pencahayaan uji: aktifkan **Debug** di dashboard, lalu lihat `red_coverage` dan
+`largestDefectArea` setiap event.
 
-## Classification Rules
+## Data Firebase
 
-| Classification | Condition |
-|----------------|-----------|
-| `PERFECT` | All foreground pixels inside the object mask are red (`non_red_pixels == 0`) |
-| `DEFECT` | At least one foreground pixel is not red |
-| `INVALID` | Input is `None`, empty, wrong type, or object mask is empty |
+| Path | Ditulis oleh | Isi |
+|---|---|---|
+| `/session` | Python | `id, status, startedAtMs, stoppedAtMs` |
+| `/vision` | Python | `status, lastClass, lastEventId, lastDetectionMs, redCoverage` |
+| `/detections/{eventId}` | Python | `class, redCoverage, redPixels, objectPixels, nonRedPixels, largestDefectArea, detectedAtMs, sessionId, timestamp` |
+| | ESP32 | `sortAction (STRAIGHT/DIVERT/MISSED), sortedAtMs` |
+| | Operator (dashboard) | `actualBin (BIN1/BIN2), confirmedAtMs` |
+| `/statistics` | Python | `total, perfect, defect, invalid` |
+| `/conveyor` | ESP32 | `deviceOnline, lastHeartbeatMs, servoState, queueLength, wifiRssi` |
 
-- Background pixels **outside** the object mask are never counted.
-- `object_pixels` = `cv2.countNonZero(mask_bin)` (not bounding-box area).
-- `red_pixels` = `cv2.countNonZero(bitwise_and(red_mask, mask_bin))`.
+`eventId` berurutan menurut waktu (`OBJ-<yymmddHHMMSS><hex>-<seq>`). Karena itu
+ESP32 cukup membaca 5 event terbaru (`orderBy="$key"&limitToLast=5`).
 
----
+## Indikator kinerja (dihitung di dashboard per sesi)
 
-## Running Tests
+* **Cycle time** = `sortedAtMs − detectedAtMs` (dari deteksi kamera sampai servo
+  kembali ke posisi lurus), dirata-rata.
+* **Production rate** = jumlah objek pada sesi / lama sesi (objek per menit).
+* **Sorting accuracy** = event yang wadah aktualnya benar / event yang sudah
+  dikonfirmasi operator. Klik **BIN1/BIN2** di tabel riwayat sesuai wadah tempat
+  balok benar-benar jatuh.
 
-```bash
-# All tests (Phase 1 unit + integration)
-python -m unittest discover -s tests -v
+## Test
 
-# Phase 1 quality inspector only
-python -m unittest tests.test_quality_inspector -v
-
-# Integration tests only
-python -m unittest tests.test_integration -v
+```powershell
+python -m unittest discover -s tests -t .
 ```
 
----
+Test tidak membutuhkan webcam, Firebase, atau ESP32. Kamera dan database diganti
+versi palsu, sedangkan server dashboard dan stream kamera ikut diuji.
 
-## Camera Selection
+## Keterbatasan yang diketahui
 
-If the wrong camera opens, change `CAMERA_INDEX` in `config.py`:
-- `0` = built-in webcam
-- `1` = first external USB webcam
-
----
-
-## Limitations
-
-- Inspection only analyses the **top surface** of the cube.
-- One cube at a time is supported (single-object gate).
-- Classification is based on colour only (red = PERFECT, any other = DEFECT).
-- Hardware IoT integration (ESP32, servo, Firebase) is out of scope for this branch.
+* Firmware belum dikompilasi atau diuji pada ESP32 fisik di laptop pengembang.
+* Jika dua balok terdeteksi lebih cepat dari selang polling ESP32 (~0,4 s), keduanya
+  tetap terbaca (5 event terbaru), tetapi jarak antarbalok harus cukup agar servo
+  sempat kembali (uji U5).
+* `secureClient.setInsecure()` di ESP32: sertifikat HTTPS tidak diverifikasi (cukup untuk prototipe).
+* Folder `dataset/green` dan `dataset/non_green` berasal dari rancangan lama (hijau)
+  dan tidak dipakai oleh aturan merah.
