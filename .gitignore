@@ -2,3 +2,9 @@
 # Python cache
 __pycache__/
 *.py[cod]
+
+# Firebase credentials and local configuration
+.env
+serviceAccountKey.json
+service-account*.json
+*serviceAccount*.json

@@ -1,0 +1,19 @@
+{
+  "conveyor": {
+    "motorStatus": "stopped",
+    "deviceOnline": false
+  },
+  "vision": {
+    "status": "offline",
+    "lastClass": "",
+    "redCoverage": 0,
+    "lastDetection": ""
+  },
+  "statistics": {
+    "total": 0,
+    "perfect": 0,
+    "defect": 0,
+    "invalid": 0
+  },
+  "detections": {}
+}

@@ -65,9 +65,21 @@ pip install -r requirements.txt
 
 ## Running the Application
 
+### Simple desktop dashboard (recommended)
+
+```bash
+python dashboard.py
+```
+
+The dashboard is a lightweight Tkinter interface built around the existing CV pipeline. It shows the live camera, calibration progress, gate state, inspection totals (PERFECT / DEFECT / INVALID), and recent inspection history. It intentionally uses a plain text heading and minimal controls rather than a large logo or decorative navigation.
+
+### Original OpenCV window
+
 ```bash
 python main.py
 ```
+
+The original camera-only OpenCV interface is still available.
 
 **Startup sequence:**
 
@@ -134,9 +146,86 @@ If the wrong camera opens, change `CAMERA_INDEX` in `config.py`:
 
 ---
 
+## Dashboard and Integration Status
+
+- The desktop dashboard runs locally and uses the existing Computer Vision pipeline.
+- Optional Firebase Realtime Database sync is available when credentials and the database URL are configured as described below.
+- This project archive does not contain a React frontend. ESP32 firmware and ESP32-to-Firebase reporting are not included in this CV package.
+
 ## Limitations
 
 - Inspection only analyses the **top surface** of the cube.
 - One cube at a time is supported (single-object gate).
 - Classification is based on colour only (red = PERFECT, any other = DEFECT).
-- Hardware IoT integration (ESP32, servo, Firebase) is out of scope for this branch.
+- ESP32 motor/servo control and ESP32-to-Firebase reporting are not implemented in this CV application.
+
+
+## Firebase Realtime Database (optional integration)
+
+The desktop dashboard can send inspection results to Firebase Realtime Database.
+It uses the Firebase Admin SDK on this computer. The Admin SDK authenticates with
+a private service-account JSON file and is not affected by client Security Rules.
+Keep that file private: do not send it in chat, upload it to GitHub, or place it
+inside a React `src` folder.
+
+### 1. Get the exact database URL
+
+Open Firebase Console → Build → Realtime Database → Data. Copy the database URL
+shown at the top of the Data view. Paste that exact URL into `.env`; do not guess
+the URL from the project name because database locations can use different hosts.
+
+### 2. Create a private service-account key
+
+In Firebase Console open Project settings → Service accounts → Generate new
+private key. Save the downloaded JSON file in this project folder as
+`serviceAccountKey.json`. Never share this file or commit it to Git.
+
+### 3. Configure this project
+
+Copy `.env.example` to `.env`, then edit `.env`:
+
+```env
+FIREBASE_DATABASE_URL=PASTE_THE_EXACT_DATABASE_URL_HERE
+FIREBASE_CREDENTIALS=serviceAccountKey.json
+```
+
+Install dependencies and run the dashboard:
+
+```bash
+pip install -r requirements.txt
+python dashboard.py
+```
+
+The status strip shows `FIREBASE: ONLINE` after the first successful write.
+If it shows `NOT CONFIGURED`, check `.env`, the service-account filename, and
+whether `firebase-admin` is installed. If it shows `ERROR`, check the message in
+the terminal and confirm that the database URL is exact.
+
+### 4. Data written by the CV dashboard
+
+- `vision/status`: `online` while the camera is running, otherwise `offline`.
+- `vision/lastClass`: `PERFECT`, `DEFECT`, or `INVALID`.
+- `vision/redCoverage` and `vision/lastDetection`: most recent inspection values.
+- `statistics`: increments `total`, `perfect`, `defect`, and `invalid`.
+- `detections`: an entry is added for each inspection.
+- `conveyor`: reserved for ESP32 motor/device status; this CV application does not
+  overwrite it.
+
+**Important:** This source project classifies objects as `PERFECT`, `DEFECT`, and
+`INVALID`. It does not produce `Green` or `Non_Green` classes. The `redCoverage`
+measurement is not a model confidence score, so the integration does not write it
+to a field named `confidence`.
+
+If your database already contains the earlier `green` / `nonGreen` statistics,
+do not import `database_structure_firebase.json` over the existing data. The app
+will preserve existing fields and add the CV counters when the first inspection
+is uploaded. If the database is brand new, the file
+`database_structure_firebase.json` shows a suitable initial structure.
+
+### Security notes
+
+Keep Realtime Database in Locked Mode / authenticated rules. The Python Admin SDK
+uses the service-account credentials and bypasses client Security Rules; therefore
+the service-account file is highly privileged. For ESP32 or a future React web
+client, set up a separate authentication flow and restrictive Security Rules.
+Never put a service-account private key in frontend code.
