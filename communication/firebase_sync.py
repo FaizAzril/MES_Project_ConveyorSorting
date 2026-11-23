@@ -79,14 +79,19 @@ class FirebaseSync:
         if not credential_path.is_absolute():
             credential_path = self.project_dir / credential_path
 
-        missing = []
         if not database_url or "PASTE_" in database_url:
-            missing.append("FIREBASE_DATABASE_URL di .env")
-        if not credential_path.is_file():
-            missing.append(f"file {credential_path.name}")
-        if missing:
-            self._set_status("NOT CONFIGURED", "Belum ada " + " dan ".join(missing))
+            self._set_status("NOT CONFIGURED", "Belum ada FIREBASE_DATABASE_URL di .env")
             _logger.warning("Firebase disabled: %s", self.last_error)
+            return
+        if not credential_path.is_file():
+            # No service account: talk to the database over plain REST, like the
+            # ESP32 does. Works only while the database rules allow it.
+            from .firebase_rest import RestDb
+            self._db = RestDb(database_url, os.getenv("FIREBASE_AUTH", "").strip())
+            self._set_status("READY", f"Mode REST (tanpa {credential_path.name})")
+            _logger.warning("Firebase REST mode: no %s, using database rules for access", credential_path.name)
+            self._thread = threading.Thread(target=self._worker, name="firebase-sync", daemon=True)
+            self._thread.start()
             return
 
         try:
@@ -206,6 +211,10 @@ class FirebaseSync:
             try:
                 if kind == "session":
                     self._ref("session").set(payload)
+                    # New session: clear the "last result" card (and legacy fields
+                    # from the old green/non-green design).
+                    self._ref("vision").set({"status": "online", "lastClass": "",
+                                             "lastEventId": "", "redCoverage": 0})
                 elif kind == "session_stop":
                     self._ref("session").update(payload)
                 elif kind == "vision_status":

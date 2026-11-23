@@ -53,7 +53,7 @@ const uint64_t LATE_LIMIT_MS = 1500;    // later than this -> cube already passe
 // ── Network ────────────────────────────────────────────────────────────
 const unsigned long POLL_INTERVAL_MS = 400;
 const unsigned long HEARTBEAT_INTERVAL_MS = 5000;
-const unsigned long HTTP_TIMEOUT_MS = 2500;
+const unsigned long HTTP_TIMEOUT_MS = 8000;  // phone hotspots can be slow
 const unsigned long WIFI_RETRY_MS = 10000;
 const int FETCH_LAST = 5;  // newest detections read per poll
 
@@ -146,16 +146,29 @@ void maintainWiFi() {
 }
 
 // ── Firebase REST ──────────────────────────────────────────────────────
+// One HTTPClient kept for the whole run with keep-alive: the slow TLS
+// handshake (seconds on a phone hotspot) happens once, not on every request.
+HTTPClient http;
+
 int firebaseRequest(const char* method, const String& path, const String& body, String* response) {
-  HTTPClient http;
   String url = String(FIREBASE_HOST) + path;
+  unsigned long started = millis();
   if (!http.begin(secureClient, url)) return -1;
+  http.setReuse(true);
+  http.setConnectTimeout(HTTP_TIMEOUT_MS);
   http.setTimeout(HTTP_TIMEOUT_MS);
   int code;
   if (strcmp(method, "GET") == 0) code = http.GET();
   else code = http.sendRequest(method, body);
   if (response && code == HTTP_CODE_OK) *response = http.getString();
+  if (code < 0) {
+    secureClient.stop();  // drop a broken connection so the next call reconnects cleanly
+  }
   http.end();
+  unsigned long took = millis() - started;
+  if (code != HTTP_CODE_OK || took > 1500) {
+    Serial.printf("[HTTP] %s %d in %lu ms\n", method, code, took);
+  }
   if (code == 401 || code == 403) Serial.println("[FIREBASE] Unauthorized: check FIREBASE_AUTH and rules");
   return code;
 }
@@ -315,6 +328,7 @@ void setup() {
   moveServo(HOME_ANGLE);
 
   secureClient.setInsecure();  // prototype: certificate not pinned
+  secureClient.setHandshakeTimeout(15);  // seconds; TLS over a phone hotspot is slow
   connectWiFi();
 
   configTime(0, 0, "pool.ntp.org", "time.google.com");
