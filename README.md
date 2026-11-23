@@ -149,8 +149,88 @@ If the wrong camera opens, change `CAMERA_INDEX` in `config.py`:
 ## Dashboard and Integration Status
 
 - The desktop dashboard runs locally and uses the existing Computer Vision pipeline.
-- Optional Firebase Realtime Database sync is available when credentials and the database URL are configured as described below.
-- This project archive does not contain a React frontend. ESP32 firmware and ESP32-to-Firebase reporting are not included in this CV package.
+- The `web-dashboard/` folder contains a separate React web monitor that reads the same Firebase Realtime Database data.
+- Optional Firebase Realtime Database sync from the desktop application is available when credentials and the database URL are configured as described below.
+- ESP32 firmware and ESP32-to-Firebase reporting are not included in this CV package yet.
+
+
+## Web Dashboard (React + Firebase)
+
+The project includes two dashboard interfaces: the existing Python desktop dashboard
+(`python dashboard.py`) for camera operation and inspection controls, and a separate
+React web dashboard in `web-dashboard/` for remote, real-time monitoring. The web
+monitor reads the `conveyor`, `vision`, `statistics`, and `detections` nodes written
+by the desktop CV application (and later by ESP32). It does not open or stream the
+physical camera; the live video remains in the desktop application.
+
+### 1. Register a Firebase Web App
+
+In Firebase Console → Project settings → General → Your apps, add a Web App (`</>`)
+if the project does not already have one. Copy its web configuration values.
+
+### 2. Enable Firebase Authentication
+
+In Firebase Console → Build → Authentication → Get started, enable **Email/Password**.
+Create a dashboard user in Authentication → Users → Add user. The web UI intentionally
+has login only; it does not provide public account registration.
+
+### 3. Configure read-only database access
+
+For this monitoring client, use authenticated read access and no client-side writes:
+
+```json
+{
+  "rules": {
+    ".read": "auth != null",
+    ".write": false
+  }
+}
+```
+
+The Python Firebase Admin SDK continues to write because Admin SDK access bypasses
+Realtime Database Security Rules. The web app only reads. When ESP32 integration is
+added, create narrowly scoped write permissions for the exact ESP32 data paths and
+a suitable authentication method; do not make the whole database publicly writable.
+
+### 4. Configure the web environment
+
+Open a terminal in the `web-dashboard` folder and copy `.env.example` to `.env.local`.
+Fill in the values from the Firebase Web App config and the exact Realtime Database URL
+shown on Firebase Console → Realtime Database → Data:
+
+```env
+VITE_FIREBASE_API_KEY=...
+VITE_FIREBASE_AUTH_DOMAIN=...
+VITE_FIREBASE_DATABASE_URL=...
+VITE_FIREBASE_PROJECT_ID=...
+VITE_FIREBASE_APP_ID=...
+```
+
+These are Firebase web-client configuration values, not the Admin SDK private key.
+Never put `serviceAccountKey.json` or any service-account private key in this folder.
+The `.env.local` file is ignored by Git.
+
+### 5. Run the web dashboard
+
+Use Node.js 22.12+ (or 20.19+) and run:
+
+```bash
+npm install
+npm run dev
+```
+
+Open the local URL printed by Vite (normally `http://localhost:5173`). Log in with the
+Email/Password user created in Firebase Authentication. For a production bundle, run
+`npm run build`; the output is created in `web-dashboard/dist/`.
+
+### Web dashboard fields
+
+- `statistics.total`, `statistics.perfect`, `statistics.defect`, `statistics.invalid`
+- `vision.status`, `vision.lastClass`, `vision.redCoverage`, `vision.lastDetection`
+- `conveyor.motorStatus`, `conveyor.deviceOnline`
+- `detections/{pushId}`: `eventId`, `class`, `redCoverage`, pixel counts, `timestamp`
+
+The `redCoverage` field is a colour-area measurement, not model confidence.
 
 ## Limitations
 

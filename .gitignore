@@ -8,3 +8,8 @@ __pycache__/
 serviceAccountKey.json
 service-account*.json
 *serviceAccount*.json
+# Web dashboard (Vite / React)
+web-dashboard/node_modules/
+web-dashboard/dist/
+web-dashboard/.env.local
+web-dashboard/.env.*.local
