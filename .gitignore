@@ -1,0 +1,21 @@
+# Python cache
+__pycache__/
+*.py[cod]
+.venv/
+
+# Firebase credentials and local configuration
+.env
+serviceAccountKey.json
+service-account*.json
+*serviceAccount*.json
+
+# ESP32 secrets
+firmware/**/secrets.h
+# Old USB-serial firmware (superseded by firmware/, contains Wi-Fi credentials)
+ConveyorSorting_SG90_Serial.ino
+
+# Web dashboard (Vite / React)
+web-dashboard/node_modules/
+web-dashboard/dist/
+web-dashboard/.env.local
+web-dashboard/.env.*.local
