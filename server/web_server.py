@@ -227,10 +227,38 @@ def make_handler(ctx: AppContext):
     return Handler
 
 
+class _ExclusiveHTTPServer(ThreadingHTTPServer):
+    """HTTP server that owns its port exclusively.
+
+    http.server enables SO_REUSEADDR, which on Windows lets two programs bind
+    the same port: the browser then reaches whichever answers (e.g. another
+    project's dev server on 8000). Here binding fails instead if it is taken.
+    """
+
+    allow_reuse_address = False
+    daemon_threads = True
+
+    def server_bind(self):
+        import socket
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):  # Windows only
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 class DashboardServer:
-    def __init__(self, ctx: AppContext, host: str, port: int):
-        self.httpd = ThreadingHTTPServer((host, port), make_handler(ctx))
-        self.httpd.daemon_threads = True
+    def __init__(self, ctx: AppContext, host: str, port: int, tries: int = 10):
+        """Bind to port, or the next free one (up to `tries` ports). port 0 = any."""
+        last_error: Optional[OSError] = None
+        for candidate in ([port] if port == 0 else range(port, port + tries)):
+            try:
+                self.httpd = _ExclusiveHTTPServer((host, candidate), make_handler(ctx))
+                break
+            except OSError as exc:
+                last_error = exc
+                _logger.warning("Port %d sedang dipakai program lain, mencoba port berikutnya", candidate)
+        else:
+            raise last_error
+        self.port = self.httpd.server_address[1]
 
     def serve_forever(self) -> None:
         self.httpd.serve_forever(poll_interval=0.5)

@@ -114,6 +114,12 @@ function CameraPanel({ camera, streamKey, onControl, busy }) {
       </div>
       <div className="camera-footer">
         <span>{calibrating ? `KALIBRASI ${Math.round((camera.calibrationProgress || 0) * 100)}%` : `GATE: ${camera.gate || '-'}`}</span>
+        {camera.running && (
+          <span className={camera.fps && camera.fps < 20 ? 'warn-text' : ''}
+            title="Frame per detik dari webcam. Di bawah 20 FPS objek di belt yang berjalan mudah terlewat: tambah cahaya.">
+            {camera.fps ? `${Math.round(camera.fps)} FPS${camera.fps < 20 ? ' · kurang cahaya?' : ''}` : '— FPS'}
+          </span>
+        )}
         <strong className={camera.running ? 'good-text' : 'muted'}>{camera.running ? (calibrating ? 'CALIBRATING' : 'RUNNING') : 'OFFLINE'}</strong>
       </div>
     </article>
@@ -331,7 +337,7 @@ export default function App() {
         <section className="setup-card">
           <div className="eyebrow"><span className="brand-dot" /> CONVEYOR SORTING SYSTEM</div>
           <h1>Server Python belum berjalan</h1>
-          <p>Jalankan <code>python main.py</code> dari folder proyek, lalu buka <code>http://127.0.0.1:8000</code>.</p>
+          <p>Jalankan <code>python main.py</code> dari folder proyek, lalu buka <code>http://127.0.0.1:8765</code>.</p>
         </section>
       </main>
     );

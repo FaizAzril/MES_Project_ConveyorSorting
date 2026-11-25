@@ -5,7 +5,7 @@
 
 Starts the computer-vision pipeline, syncs every inspection to Firebase
 (the ESP32 reads it from there and drives the SG90 servo), and serves the web
-dashboard with the live camera feed at http://127.0.0.1:8000.
+dashboard with the live camera feed at http://127.0.0.1:8765.
 """
 import argparse
 import logging
@@ -40,7 +40,7 @@ def main() -> int:
     try:
         server = DashboardServer(ctx, args.host, args.port)
     except OSError as exc:
-        _logger.error("Port %d sedang dipakai (%s). Tutup aplikasi lain atau pakai --port.", args.port, exc)
+        _logger.error("Port %d-%d sedang dipakai semua (%s). Pakai --port lain.", args.port, args.port + 9, exc)
         firebase.close()
         return 1
 
@@ -54,7 +54,7 @@ def main() -> int:
             _logger.error("%s. Ubah CAMERA_INDEX di config.py lalu klik Start Camera di dashboard.",
                           pipeline.camera_error)
 
-    url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '') else args.host}:{args.port}"
+    url = f"http://{'127.0.0.1' if args.host in ('0.0.0.0', '') else args.host}:{server.port}"
     _logger.info("Dashboard: %s  (Ctrl+C untuk berhenti)", url)
     _logger.info("Firebase: %s %s", firebase.status, firebase.last_error)
     if config.OPEN_BROWSER and not args.no_browser:

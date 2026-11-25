@@ -11,8 +11,11 @@
    ESP32 polls the newest detections, then for each new event:
        PERFECT          -> STRAIGHT (servo stays HOME)  -> BIN1
        DEFECT / INVALID -> DIVERT   (servo pushes)      -> BIN2
-   The servo fires at  detectedAtMs + TRAVEL_TIME_MS  (t = L / v, measured
-   from the camera ROI to the servo arm), using NTP time on both sides.
+   DIVERT: the arm swings out (blocks the belt) as soon as the event is
+   received, stays out until the cube has arrived at it
+   (detectedAtMs + TRAVEL_TIME_MS, t = L / v) plus DIVERT_HOLD_AFTER_ARRIVAL_MS
+   so the cube slides into BIN2, then sweeps slowly back to HOME.
+   Both sides use NTP time.
    After acting, the ESP32 writes back  sortAction + sortedAtMs  so the
    dashboard can compute cycle time. Heartbeat goes to /conveyor.
 
@@ -36,19 +39,25 @@
 // ── Servo ──────────────────────────────────────────────────────────────
 const int SERVO_PIN = 18;
 const int HOME_ANGLE = 90;      // arm parallel to the belt (does not block)
-const int DIVERT_ANGLE = 180;   // arm pushes the cube to BIN2 (calibrate physically, test U4)
+const int DIVERT_ANGLE = 200;   // arm pushes the cube to BIN2 (calibrate physically, test U4)
 // Conservative SG90 pulse range from the bench tests. Do not widen blindly.
 const int SERVO_MIN_PULSE_US = 1000;
 const int SERVO_MAX_PULSE_US = 2000;
-const unsigned long DIVERT_HOLD_MS = 700;   // arm stays out
-const unsigned long HOME_SETTLE_MS = 500;   // time for the arm to get back home
+// The arm goes out immediately for a DEFECT event and waits for the cube;
+// it stays out this long AFTER the cube's expected arrival at the arm, so
+// the cube has time to slide along it into BIN2. Increase if the arm still
+// closes too early, decrease if it blocks the next cube.
+const unsigned long DIVERT_HOLD_AFTER_ARRIVAL_MS = 3000;
+// The swing out stays fast, but the way back to HOME is a slow sweep so the arm
+// does not kick the cube (or the next one). Larger = slower return.
+const unsigned long RETURN_DURATION_MS = 2000;  // DIVERT -> HOME sweep time
+const unsigned long HOME_SETTLE_MS = 150;       // pause after reaching HOME
 
 // ── Timing: measure on the real conveyor (test U3) ─────────────────────
 // TRAVEL_TIME_MS = distance camera-ROI-centre -> servo arm / belt speed.
 // Example: L = 20 cm, v = 8 cm/s  ->  2500 ms.
-const uint64_t TRAVEL_TIME_MS = 2500;
-const uint64_t SERVO_LEAD_MS = 150;     // start moving slightly early
-const uint64_t LATE_LIMIT_MS = 1500;    // later than this -> cube already passed
+const uint64_t TRAVEL_TIME_MS = 4000;   // camera detection -> cube reaches the arm
+const uint64_t LATE_LIMIT_MS = 1500;    // STRAIGHT reported later than this -> MISSED
 
 // ── Network ────────────────────────────────────────────────────────────
 const unsigned long POLL_INTERVAL_MS = 400;
@@ -83,7 +92,8 @@ bool baselineDone = false;
 
 enum ServoState { SERVO_HOME, SERVO_DIVERTING, SERVO_RETURNING };
 ServoState servoState = SERVO_HOME;
-unsigned long divertStartedAt = 0;
+unsigned long divertStartedAt = 0;  // millis() when the slow return started
+uint64_t divertHoldUntil = 0;       // epoch ms: keep the arm out until then
 String divertEventId = "";
 
 unsigned long lastPoll = 0, lastHeartbeat = 0, lastWifiAttempt = 0;
@@ -225,8 +235,7 @@ void pollDetections() {
     uint64_t detectedAt = ev["detectedAtMs"] | (uint64_t)0;
     if (detectedAt == 0) detectedAt = epochMs();
     bool divert = (cls != "PERFECT");
-    uint64_t due = detectedAt + TRAVEL_TIME_MS;
-    due = due > SERVO_LEAD_MS ? due - SERVO_LEAD_MS : due;
+    uint64_t due = detectedAt + TRAVEL_TIME_MS;  // cube arrives at the arm
 
     if (jobCount >= QUEUE_SIZE) {
       Serial.println("[QUEUE] Full, event dropped");
@@ -275,11 +284,23 @@ bool sendOneReport() {
 void updateSorting() {
   uint64_t now = epochMs();
 
-  if (servoState == SERVO_DIVERTING && millis() - divertStartedAt >= DIVERT_HOLD_MS) {
-    moveServo(HOME_ANGLE);
+  if (servoState == SERVO_DIVERTING && now >= divertHoldUntil) {
     servoState = SERVO_RETURNING;
     divertStartedAt = millis();
-  } else if (servoState == SERVO_RETURNING && millis() - divertStartedAt >= HOME_SETTLE_MS) {
+  } else if (servoState == SERVO_RETURNING) {
+    // Slow sweep DIVERT -> HOME: angle follows elapsed time, 1 degree at a time.
+    unsigned long elapsed = millis() - divertStartedAt;
+    if (elapsed < RETURN_DURATION_MS) {
+      static int lastAngle = -1;
+      int angle = DIVERT_ANGLE + (long)(HOME_ANGLE - DIVERT_ANGLE) * (long)elapsed / (long)RETURN_DURATION_MS;
+      if (angle != lastAngle) {
+        sortingServo.write(angle);
+        lastAngle = angle;
+      }
+      return;  // nothing else may move the arm during the sweep
+    }
+    sortingServo.write(HOME_ANGLE);
+    if (elapsed < RETURN_DURATION_MS + HOME_SETTLE_MS) return;
     servoState = SERVO_HOME;
     // t_done = cube passed the arm and servo is back home (proposal E.1).
     pushReport(divertEventId, "DIVERT", epochMs());
@@ -288,19 +309,33 @@ void updateSorting() {
 
   if (jobCount == 0 || servoState != SERVO_HOME) return;
   SortJob& job = jobs[jobHead];
-  if (now < job.dueMs) return;
 
-  if (now - job.dueMs > LATE_LIMIT_MS) {
-    Serial.printf("[SORT] %s too late (%llu ms), cube already passed\n",
-                  job.eventId.c_str(), (unsigned long long)(now - job.dueMs));
-    pushReport(job.eventId, "MISSED", now);
-  } else if (job.divert) {
-    moveServo(DIVERT_ANGLE);
-    servoState = SERVO_DIVERTING;
-    divertStartedAt = millis();
-    divertEventId = job.eventId;
-    Serial.printf("[SERVO] %s DIVERT\n", job.eventId.c_str());
+  if (job.divert) {
+    // Block the belt right away and keep blocking until the cube has
+    // arrived and had time to slide into BIN2.
+    uint64_t holdUntil = job.dueMs + DIVERT_HOLD_AFTER_ARRIVAL_MS;
+    if (now >= holdUntil) {
+      Serial.printf("[SORT] %s too late, cube already passed\n", job.eventId.c_str());
+      pushReport(job.eventId, "MISSED", now);
+    } else {
+      moveServo(DIVERT_ANGLE);
+      servoState = SERVO_DIVERTING;
+      divertHoldUntil = holdUntil;
+      divertEventId = job.eventId;
+      Serial.printf("[SERVO] %s DIVERT: arm out, cube in %lld ms, back home in %llu ms\n",
+                    job.eventId.c_str(), (long long)(job.dueMs - now),
+                    (unsigned long long)(holdUntil - now));
+    }
   } else {
+    if (now < job.dueMs) return;  // PERFECT: just wait until it has passed
+    if (now - job.dueMs > LATE_LIMIT_MS) {
+      Serial.printf("[SORT] %s too late (%llu ms)\n",
+                    job.eventId.c_str(), (unsigned long long)(now - job.dueMs));
+      pushReport(job.eventId, "MISSED", now);
+      jobHead = (jobHead + 1) % QUEUE_SIZE;
+      jobCount--;
+      return;
+    }
     pushReport(job.eventId, "STRAIGHT", now);
     Serial.printf("[SORT] %s STRAIGHT\n", job.eventId.c_str());
   }
@@ -311,8 +346,9 @@ void updateSorting() {
 // Network calls block for up to HTTP_TIMEOUT_MS: only do them when no servo
 // action is due soon, so the arm always moves on time.
 bool networkWindowFree() {
-  if (servoState != SERVO_HOME) return false;
+  if (servoState != SERVO_HOME) return false;  // arm out or returning: no blocking calls
   if (jobCount == 0) return true;
+  if (jobs[jobHead].divert) return false;       // arm goes out on the next loop
   uint64_t now = epochMs();
   return jobs[jobHead].dueMs > now + HTTP_TIMEOUT_MS + 200;
 }
