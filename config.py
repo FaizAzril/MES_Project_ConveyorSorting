@@ -115,5 +115,16 @@ STREAM_JPEG_QUALITY = 75
 # (FIREBASE_DATABASE_URL, FIREBASE_CREDENTIALS). Without them the system runs
 # locally: camera + dashboard work, but no data reaches the ESP32.
 
+# ── OEE ───────────────────────────────────────────────────────────────────
+# Ideal cycle time: the shortest time per object the line is designed for,
+# i.e. the time between two objects at full speed (minimum spacing / belt
+# speed, also limited by the servo cycle of ~7 s for a DEFECT). Used for
+# Performance = (ideal cycle time x count) / run time. Set from test U3/U5.
+IDEAL_CYCLE_TIME_S = 6.0
+# The line counts as DOWN when the ESP32 heartbeat is older than this
+# (only when Firebase is configured; CV-only mode ignores the ESP32).
+OEE_REQUIRE_ESP32 = True
+OEE_ESP32_TIMEOUT_S = 20
+
 # Misc
 DEBUG = False

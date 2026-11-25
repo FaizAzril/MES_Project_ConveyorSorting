@@ -15,6 +15,7 @@ import webbrowser
 
 import config
 from communication.firebase_sync import FirebaseSync
+from server.oee import OEETracker
 from server.web_server import AppContext, DashboardServer
 from vision.pipeline import InspectionPipeline
 
@@ -34,8 +35,10 @@ def main() -> int:
 
     firebase = FirebaseSync()
     pipeline = InspectionPipeline(on_record=firebase.push_inspection)
-    ctx = AppContext(pipeline, firebase)
-    ctx.session_started_ms = int(time.time() * 1000)
+    started_ms = int(time.time() * 1000)
+    oee = OEETracker(pipeline, firebase, started_ms=started_ms)
+    ctx = AppContext(pipeline, firebase, oee)
+    ctx.session_started_ms = started_ms
 
     try:
         server = DashboardServer(ctx, args.host, args.port)
@@ -47,6 +50,7 @@ def main() -> int:
     firebase.start_session(pipeline.session_id)
     firebase.start_mirror()
     pipeline.start()
+    oee.start()
     if config.AUTO_START_CAMERA:
         if pipeline.start_camera():
             firebase.set_vision_status("online")
@@ -67,6 +71,7 @@ def main() -> int:
     finally:
         server.shutdown()
         pipeline.shutdown()
+        oee.stop()  # final OEE written before the session closes
         firebase.set_vision_status("offline")
         firebase.stop_session(pipeline.session_id)
         firebase.close()

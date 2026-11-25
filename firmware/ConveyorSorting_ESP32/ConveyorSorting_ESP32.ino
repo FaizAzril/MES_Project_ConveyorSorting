@@ -47,7 +47,7 @@ const int SERVO_MAX_PULSE_US = 2000;
 // it stays out this long AFTER the cube's expected arrival at the arm, so
 // the cube has time to slide along it into BIN2. Increase if the arm still
 // closes too early, decrease if it blocks the next cube.
-const unsigned long DIVERT_HOLD_AFTER_ARRIVAL_MS = 3000;
+const unsigned long DIVERT_HOLD_AFTER_ARRIVAL_MS = 1000;
 // The swing out stays fast, but the way back to HOME is a slow sweep so the arm
 // does not kick the cube (or the next one). Larger = slower return.
 const unsigned long RETURN_DURATION_MS = 2000;  // DIVERT -> HOME sweep time
