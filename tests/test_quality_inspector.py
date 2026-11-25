@@ -82,7 +82,8 @@ class TestQualityInspector(unittest.TestCase):
         mask = np.full((size,size), 255, dtype=np.uint8)
         res = self.inspector.inspect(roi, mask)
         self.assertEqual(res["classification"], "DEFECT")
-        self.assertLess(res["red_coverage"], config.RED_COVERAGE_THRESHOLD)
+        # Caught by the spot rule: the patch is one large connected non-red area.
+        self.assertGreaterEqual(res["largest_defect_area"], side * side)
 
 
     def test_defect_just_below_threshold(self):

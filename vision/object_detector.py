@@ -43,32 +43,89 @@ class ObjectDetector:
             raise ValueError("Input frame must be a BGR image with 3 channels.")
         if self._background.shape != frame.shape:
             raise ValueError("Input frame size does not match calibrated background size.")
-        diff = cv2.absdiff(self._background, frame)
+        background = self._exposure_matched_background(frame)
+        diff = cv2.absdiff(background, frame)
         diff_max = np.max(diff, axis=2).astype(np.uint8)
         _, thresh = cv2.threshold(diff_max, getattr(config, 'CALIB_DIFF_THRESHOLD', 30), 255, cv2.THRESH_BINARY)
+        if getattr(config, "SHADOW_SUPPRESSION", True):
+            thresh[self._shadow_mask(background, frame)] = 0
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, self.kernel)
+        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, self.kernel)
         contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         results: List[Tuple[Tuple[int, int, int, int], np.ndarray]] = []
+        self.rejected: List[Tuple[Tuple[int, int, int, int], str]] = []
+        min_solidity = getattr(config, "MIN_SOLIDITY", 0.0)
+        min_extent = getattr(config, "MIN_EXTENT", 0.0)
         for cnt in contours:
             area = cv2.contourArea(cnt)
+            box = cv2.boundingRect(cnt)
+            x, y, w, h = box
             if area < config.MIN_OBJECT_AREA:
+                if area >= config.MIN_OBJECT_AREA / 4:
+                    self.rejected.append((box, "kecil"))
                 continue
-            max_area = getattr(config, "MAX_OBJECT_AREA", 1e6)
-            if area > max_area:
+            if area > getattr(config, "MAX_OBJECT_AREA", 1e6):
+                self.rejected.append((box, "besar"))
                 continue
-            x, y, w, h = cv2.boundingRect(cnt)
             if h == 0:
                 continue
-            aspect = w / float(h)
-            if abs(aspect - 1.0) > config.ASPECT_RATIO_TOLERANCE:
+            if abs(w / float(h) - 1.0) > config.ASPECT_RATIO_TOLERANCE:
+                self.rejected.append((box, "bukan persegi"))
+                continue
+            # A cube seen from above is one solid blob. Belt texture, lighting
+            # flicker and hands give ragged shapes: reject those.
+            hull_area = cv2.contourArea(cv2.convexHull(cnt))
+            if hull_area and area / hull_area < min_solidity:
+                self.rejected.append((box, "tidak padat"))
+                continue
+            if area / float(w * h) < min_extent:
+                self.rejected.append((box, "tidak padat"))
                 continue
             mask = np.zeros(frame.shape[:2], dtype=np.uint8)
             cv2.drawContours(mask, [cnt], -1, 255, thickness=cv2.FILLED)
             if cv2.countNonZero(mask) == 0:
                 continue
-            results.append(((x, y, w, h), mask))
-        _logger.debug("Detected %d objects.", len(results))
+            results.append((box, mask))
+        _logger.debug("Detected %d objects (%d rejected).", len(results), len(self.rejected))
         return results
+
+    @staticmethod
+    def _shadow_mask(background: np.ndarray, frame: np.ndarray) -> np.ndarray:
+        """Pixels that are just a darker copy of the belt (the cube's shadow).
+
+        Shadow keeps the belt's colour (same channel ratios) and only loses
+        brightness; a dark object, even dark blue, changes the colour itself.
+        """
+        bg = background.astype(np.float32) + 1.0
+        fr = frame.astype(np.float32) + 1.0
+        ratio = fr / bg                              # per-channel brightness ratio
+        mean = ratio.mean(axis=2)
+        spread = np.abs(ratio - mean[..., None]).max(axis=2)
+        return (mean > 0.3) & (mean < 0.92) & (spread < 0.12 * mean + 0.03)
+
+    def _exposure_matched_background(self, frame: np.ndarray) -> np.ndarray:
+        """Scale the stored background to the frame's current exposure.
+
+        Webcams change exposure on their own (a dark object makes the whole
+        picture brighter). Without this the whole belt differs from the
+        calibration and a dark object merges with it. The gain is measured on
+        a thin strip along the ROI border, which is belt (objects must be
+        fully inside the ROI).
+        """
+        if not getattr(config, "EXPOSURE_COMPENSATION", True):
+            return self._background
+        h, w = frame.shape[:2]
+        s = max(4, int(min(h, w) * 0.06))
+        strip = np.zeros((h, w), bool)
+        strip[:s, :] = strip[-s:, :] = True
+        strip[:, :s] = strip[:, -s:] = True
+        bg = self._background[strip].astype(np.float32)
+        fr = frame[strip].astype(np.float32)
+        gain = (np.median(fr, axis=0) + 1.0) / (np.median(bg, axis=0) + 1.0)
+        gain = np.clip(gain, 0.5, 2.0)
+        if np.all(np.abs(gain - 1.0) < 0.02):
+            return self._background
+        return np.clip(self._background.astype(np.float32) * gain, 0, 255).astype(np.uint8)
 
     def update_background(self, frame: np.ndarray) -> None:
         self.calibrate_background(frame)

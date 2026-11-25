@@ -26,6 +26,10 @@ class CameraManager:
         self.running: bool = False
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        self.frame_seq = 0          # increments on every new camera frame
+        self.fps = 0.0              # measured webcam frame rate
+        self._fps_count = 0
+        self._fps_since = time.monotonic()
 
     def _open_camera(self) -> bool:
         backend = getattr(cv2, config.CAMERA_BACKEND, None) if getattr(config, "CAMERA_BACKEND", None) else None
@@ -62,6 +66,13 @@ class CameraManager:
                 continue
             with self._lock:
                 self.frame = frame
+                self.frame_seq += 1
+            # Real frame rate delivered by the webcam (drops in dim light).
+            self._fps_count += 1
+            now = time.monotonic()
+            if now - self._fps_since >= 1.0:
+                self.fps = self._fps_count / (now - self._fps_since)
+                self._fps_count, self._fps_since = 0, now
         _logger.debug("Capture thread exiting")
 
     def start(self) -> bool:

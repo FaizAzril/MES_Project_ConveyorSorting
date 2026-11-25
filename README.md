@@ -18,7 +18,7 @@ langsung di dalam dashboard**.
 Webcam ──► main.py (Python)
              ├─ vision/        deteksi objek + inspeksi merah  ──► PERFECT / DEFECT
              ├─ communication/ FirebaseSync  ──► /detections, /statistics, /vision, /session
-             └─ server/        http://127.0.0.1:8000
+             └─ server/        http://127.0.0.1:8765
                                  ├─ dashboard web (web-dashboard/dist)
                                  ├─ /video_feed  (stream kamera di panel dashboard)
                                  └─ /api/state, /api/control, /api/confirm
@@ -94,11 +94,11 @@ dashboard bekerja, tetapi ESP32 tidak menerima data.
 python main.py
 ```
 
-Browser terbuka ke `http://127.0.0.1:8000`. Kamera langsung menyala lalu
+Browser terbuka ke `http://127.0.0.1:8765`. Kamera langsung menyala lalu
 mengkalibrasi latar belakang, jadi **kosongkan conveyor selama kalibrasi**.
 Tombol Start/Stop, Recalibrate, dan Debug ada di panel kamera. Hentikan dengan `Ctrl+C`.
 
-Opsi: `python main.py --no-browser --port 8000 --host 0.0.0.0` (pakai `0.0.0.0`
+Opsi: `python main.py --no-browser --port 8765 --host 0.0.0.0` (pakai `0.0.0.0`
 agar dashboard bisa dibuka dari perangkat lain di jaringan yang sama).
 
 ### 5. ESP32
@@ -111,9 +111,12 @@ agar dashboard bisa dibuka dari perangkat lain di jaringan yang sama).
    selama rules masih terbuka. Setelah `firebase/database.rules.json` dipasang,
    ESP32 akan mendapat 401 sampai database secret diisi.
 3. Ukur waktu tempuh balok dari tengah ROI kamera ke lengan servo (uji U3), lalu
-   isi `TRAVEL_TIME_MS` (t = L / v). Nilai servo (`HOME_ANGLE` 90°, `DIVERT_ANGLE`
-   180°, pulsa 1000–2000 µs, tahan 700 ms, kembali 500 ms) diambil dari firmware
-   serial lama yang sudah diuji di bench. Tetap periksa saat uji U4.
+   isi `TRAVEL_TIME_MS` (t = L / v). Untuk DEFECT, palang langsung keluar begitu
+   event diterima, bertahan sampai balok tiba ditambah
+   `DIVERT_HOLD_AFTER_ARRIVAL_MS` (1500 ms), lalu kembali ke HOME perlahan
+   selama `RETURN_DURATION_MS` (1000 ms). Sudut dan pulsa (`HOME_ANGLE` 90°,
+   `DIVERT_ANGLE` 180°, 1000–2000 µs) diambil dari firmware serial lama yang sudah
+   diuji di bench. Tetap periksa saat uji U4.
 4. Upload. Serial Monitor 115200 menampilkan event, aksi servo, dan status Wi-Fi.
 
 Servo diberi daya dari buck 5 V tersendiri, GND disatukan dengan ESP32, dan sinyal
