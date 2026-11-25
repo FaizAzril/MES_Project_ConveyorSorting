@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 
 // All data comes from the local Python server (main.py):
 //   /api/state   camera status + Firebase data (mirrored) or local data
@@ -74,6 +74,64 @@ function MetricCard({ label, value, toneClass, note }) {
   );
 }
 
+function fmtDuration(ms) {
+  const s = Math.max(0, Math.round(Number(ms || 0) / 1000));
+  const m = Math.floor(s / 60);
+  return m ? `${m}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`;
+}
+
+function pctText(v) {
+  return v == null ? '—' : `${(v * 100).toFixed(1)}%`;
+}
+
+// OEE = Availability x Performance x Quality (computed in main.py, server/oee.py).
+function OeePanel({ oee }) {
+  if (!oee) return null;
+  const running = oee.state === 'RUNNING';
+  const parts = [
+    { label: 'AVAILABILITY', value: oee.availability, note: `berjalan ${fmtDuration(oee.runMs)} dari ${fmtDuration(oee.plannedMs)}` },
+    { label: 'PERFORMANCE', value: oee.performance, note: `${oee.totalCount} objek × CT ideal ${oee.idealCycleTimeS}s / waktu berjalan` },
+    { label: 'QUALITY', value: oee.quality, note: `${oee.goodCount} PERFECT dari ${oee.totalCount} objek` },
+  ];
+  const reasons = Object.entries(oee.downtimeByReason || {});
+  return (
+    <section className="panel oee-panel">
+      <div className="panel-heading">
+        <div>
+          <div className="panel-title">OEE · OVERALL EQUIPMENT EFFECTIVENESS (SESI INI)</div>
+          <div className="panel-subtitle">OEE = Availability × Performance × Quality</div>
+        </div>
+        <span className={`status-pill ${running ? 'online' : 'offline'}`}><i />
+          {running ? 'LINE RUNNING' : `LINE DOWN · ${oee.reason || '-'}`}
+        </span>
+      </div>
+      <div className="oee-grid">
+        <div className="oee-main">
+          <div className="metric-label">OEE</div>
+          <div className="oee-value">{pctText(oee.oee)}</div>
+          <div className="metric-note">
+            {oee.oee == null ? 'menunggu objek pertama' : (oee.performance > 1 ? 'Performance > 100%: CT ideal terlalu besar' : 'world class ≥ 85%')}
+          </div>
+        </div>
+        {parts.map((p) => (
+          <div className="oee-part" key={p.label}>
+            <div className="metric-label">{p.label}</div>
+            <div className="oee-part-value">{pctText(p.value)}</div>
+            <div className="progress-track"><div className="progress-fill bar-good" style={{ width: `${Math.min(100, (p.value || 0) * 100)}%` }} /></div>
+            <div className="metric-note">{p.note}</div>
+          </div>
+        ))}
+      </div>
+      <div className="oee-downtime">
+        <span>Downtime {fmtDuration(oee.downtimeMs)}</span>
+        {reasons.length
+          ? reasons.map(([r, ms]) => <span key={r} className="downtime-chip">{r}: {fmtDuration(ms)}</span>)
+          : <span className="muted">tidak ada</span>}
+      </div>
+    </section>
+  );
+}
+
 function StatusPill({ label, state }) {
   return <span className={`status-pill ${state}`}><i />{label}</span>;
 }
@@ -126,10 +184,196 @@ function CameraPanel({ camera, streamKey, onControl, busy }) {
   );
 }
 
+async function downloadReport(format, scope, session) {
+  const query = new URLSearchParams({ format, scope });
+  if (session !== undefined) query.set('session', session);
+  const res = await fetch(`/api/report?${query}`, { cache: 'no-store' });
+  if (!res.ok) {
+    const json = await res.json().catch(() => ({}));
+    throw new Error(json.error || `HTTP ${res.status}`);
+  }
+  const blob = await res.blob();
+  const match = /filename="([^"]+)"/.exec(res.headers.get('Content-Disposition') || '');
+  const name = match ? match[1] : `Laporan_ConveyorSorting.${format}`;
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+// Past sessions: summaries, inspections on demand, per-session report.
+function HistorySection({ history }) {
+  const [openId, setOpenId] = useState(null);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const toggle = async (sid) => {
+    if (openId === sid) { setOpenId(null); return; }
+    setOpenId(sid);
+    setRows([]);
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/history?session=${encodeURIComponent(sid)}`, { cache: 'no-store' });
+      const json = await res.json();
+      if (!res.ok || !json.ok) throw new Error(json.error || `HTTP ${res.status}`);
+      setRows(json.events.slice().reverse());
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const exportSession = async (format, sid) => {
+    setError('');
+    try { await downloadReport(format, 'session', sid); } catch (err) { setError(err.message); }
+  };
+
+  const list = history || [];
+  return (
+    <section className="panel history-panel past-panel">
+      <div className="panel-heading history-heading">
+        <div>
+          <div className="panel-title">RIWAYAT PRODUKSI · SESI SEBELUMNYA</div>
+          <div className="panel-subtitle">Data lama tetap tersimpan; angka di atas hanya untuk sesi yang sedang berjalan</div>
+        </div>
+        <span className="updated-label">{list.length} sesi</span>
+      </div>
+      {error && <div className="modal-error">{error}</div>}
+      {list.length ? (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>SESI</th><th>MULAI</th><th>SELESAI</th><th>TOTAL</th><th>PERFECT</th><th>DEFECT</th><th>INVALID</th><th>CT RATA-RATA</th><th>AKURASI</th><th>OEE</th><th /></tr></thead>
+            <tbody>{list.map((h) => (
+              <Fragment key={h.sessionId}>
+                <tr className={openId === h.sessionId ? 'is-open' : ''}>
+                  <td className="event-id">{h.sessionId}</td>
+                  <td>{fmtDateTime(h.startedAtMs)}</td>
+                  <td>{fmtDateTime(h.endedAtMs)}</td>
+                  <td>{h.total}</td>
+                  <td className="good-text">{h.perfect}</td>
+                  <td className="bad-text">{h.defect}</td>
+                  <td>{h.invalid}</td>
+                  <td>{h.avgCycleTimeS == null ? '—' : `${h.avgCycleTimeS.toFixed(2)} s`}</td>
+                  <td>{h.sortingAccuracy == null ? '—' : `${(h.sortingAccuracy * 100).toFixed(1)}%`}</td>
+                  <td>{h.oee == null ? '—' : `${(h.oee * 100).toFixed(1)}%`}</td>
+                  <td>
+                    <div className="bin-buttons">
+                      <button className="bin-button" disabled={!h.total} onClick={() => toggle(h.sessionId)}>{openId === h.sessionId ? 'Tutup' : 'Detail'}</button>
+                      <button className="bin-button" onClick={() => exportSession('pdf', h.sessionId)}>PDF</button>
+                      <button className="bin-button" onClick={() => exportSession('xlsx', h.sessionId)}>Excel</button>
+                    </div>
+                  </td>
+                </tr>
+                {openId === h.sessionId && (
+                  <tr className="detail-row"><td colSpan={11}>
+                    {loading ? <div className="empty-state compact-empty">Memuat…</div> : (
+                      <table className="inner-table">
+                        <thead><tr><th>EVENT ID</th><th>WAKTU</th><th>HASIL</th><th>RED COVERAGE</th><th>ESP32</th><th>CYCLE TIME</th><th>WADAH AKTUAL</th></tr></thead>
+                        <tbody>{rows.map((e) => (
+                          <tr key={e.eventId}>
+                            <td className="event-id">{e.eventId}</td>
+                            <td>{fmtDateTime(e.detectedAtMs)}</td>
+                            <td><span className={`result-tag ${tone(e.class)}`}>{e.class}</span></td>
+                            <td>{(pct(e.redCoverage) * 100).toFixed(1)}%</td>
+                            <td>{e.sortAction || '—'}</td>
+                            <td>{e.cycleTimeS == null ? '—' : `${e.cycleTimeS.toFixed(2)} s`}</td>
+                            <td>{e.actualBin || '—'}</td>
+                          </tr>
+                        ))}</tbody>
+                      </table>
+                    )}
+                  </td></tr>
+                )}
+              </Fragment>
+            ))}</tbody>
+          </table>
+        </div>
+      ) : <div className="empty-state">Belum ada sesi sebelumnya. Riwayat muncul setelah main.py dijalankan ulang (butuh Firebase agar tersimpan).</div>}
+    </section>
+  );
+}
+
+// Report export: choose the format (PDF / Excel) and the data scope first.
+function ExportButton() {
+  const [open, setOpen] = useState(false);
+  const [format, setFormat] = useState('pdf');
+  const [scope, setScope] = useState('session');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  const download = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await downloadReport(format, scope);
+      setOpen(false);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <button className="primary-button" onClick={() => setOpen(true)}>Export Laporan</button>
+      {open && (
+        <div className="modal-backdrop" onClick={() => !busy && setOpen(false)}>
+          <div className="modal-card" role="dialog" aria-label="Export laporan" onClick={(e) => e.stopPropagation()}>
+            <div className="panel-title">EXPORT LAPORAN PRODUKSI</div>
+            <p className="modal-text">Ringkasan produksi, KPI, OEE, downtime, dan detail setiap inspeksi.</p>
+
+            <div className="choice-label">Format file</div>
+            <div className="choice-row">
+              {[
+                { id: 'pdf', title: 'PDF', note: 'siap cetak / dilampirkan' },
+                { id: 'xlsx', title: 'Excel', note: 'bisa diolah: filter, grafik' },
+              ].map((o) => (
+                <button key={o.id} className={`choice ${format === o.id ? 'is-active' : ''}`} onClick={() => setFormat(o.id)}>
+                  <strong>{o.title}</strong><span>{o.note}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="choice-label">Cakupan data</div>
+            <div className="choice-row">
+              {[
+                { id: 'session', title: 'Sesi ini', note: 'termasuk OEE dan downtime' },
+                { id: 'all', title: 'Semua data', note: 'seluruh riwayat inspeksi' },
+              ].map((o) => (
+                <button key={o.id} className={`choice ${scope === o.id ? 'is-active' : ''}`} onClick={() => setScope(o.id)}>
+                  <strong>{o.title}</strong><span>{o.note}</span>
+                </button>
+              ))}
+            </div>
+
+            {error && <div className="modal-error">{error}</div>}
+            <div className="modal-actions">
+              <button className="ghost-button" disabled={busy} onClick={() => setOpen(false)}>Batal</button>
+              <button className="primary-button" disabled={busy} onClick={download}>
+                {busy ? 'Membuat laporan…' : `Unduh ${format === 'pdf' ? 'PDF' : 'Excel'}`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function Dashboard({ state, connection, onControl, onConfirm, busy, message, streamKey, now }) {
   const camera = state?.camera || {};
   const data = state?.data || {};
-  const stats = data.statistics || {};
+  // Live numbers are the current session's (reset to 0 when main.py starts);
+  // older sessions are shown in the history section at the bottom.
+  const stats = state?.sessionStats || data.statistics || {};
   const vision = data.vision || {};
   const conveyor = data.conveyor || {};
   const session = data.session || {};
@@ -162,6 +406,9 @@ function Dashboard({ state, connection, onControl, onConfirm, busy, message, str
           <div className="eyebrow"><span className="brand-dot" /> CONVEYOR SORTING SYSTEM · MINI MES</div>
           <h1>Quality Inspection <span className="web-tag">MERAH = PERFECT</span></h1>
         </div>
+        <div className="top-actions">
+          <ExportButton />
+        </div>
       </header>
 
       <main className="page-content">
@@ -186,6 +433,8 @@ function Dashboard({ state, connection, onControl, onConfirm, busy, message, str
           <MetricCard label="SORTING ACCURACY" value={kpi.accuracy == null ? '—' : `${kpi.accuracy.toFixed(1)}%`} note={`${kpi.correct}/${kpi.confirmed} dikonfirmasi operator`} />
           <MetricCard label="ESP32 SORTED" value={kpi.sorted} note={espOnline ? `RSSI ${conveyor.wifiRssi ?? '-'} dBm` : 'ESP32 belum mengirim heartbeat'} />
         </section>
+
+        <OeePanel oee={state?.oee} />
 
         <section className="main-grid">
           <CameraPanel camera={camera} streamKey={streamKey} onControl={onControl} busy={busy} />
@@ -232,16 +481,16 @@ function Dashboard({ state, connection, onControl, onConfirm, busy, message, str
         <section className="panel history-panel">
           <div className="panel-heading history-heading">
             <div>
-              <div className="panel-title">INSPECTION HISTORY</div>
-              <div className="panel-subtitle">20 event terbaru · konfirmasi wadah tempat balok benar-benar jatuh untuk sorting accuracy</div>
+              <div className="panel-title">INSPEKSI SESI INI</div>
+              <div className="panel-subtitle">20 event terbaru sesi berjalan · konfirmasi wadah tempat balok benar-benar jatuh untuk sorting accuracy</div>
             </div>
             <span className="updated-label">Terbaru di atas</span>
           </div>
-          {events.length ? (
+          {sessionEvents.length ? (
             <div className="table-wrap">
               <table>
                 <thead><tr><th>EVENT ID</th><th>WAKTU</th><th>HASIL</th><th>RED COVERAGE</th><th>ESP32</th><th>CYCLE TIME</th><th>WADAH AKTUAL</th></tr></thead>
-                <tbody>{events.slice(0, 20).map((e) => (
+                <tbody>{sessionEvents.slice(0, 20).map((e) => (
                   <tr key={e.id}>
                     <td className="event-id">{e.eventId}</td>
                     <td>{fmtTime(e.detectedAtMs)}</td>
@@ -265,8 +514,9 @@ function Dashboard({ state, connection, onControl, onConfirm, busy, message, str
                 ))}</tbody>
               </table>
             </div>
-          ) : <div className="empty-state">Belum ada riwayat inspeksi. Letakkan balok di conveyor setelah kalibrasi selesai.</div>}
+          ) : <div className="empty-state">Sesi baru: belum ada inspeksi. Letakkan balok di conveyor setelah kalibrasi selesai.</div>}
         </section>
+        <HistorySection history={state?.history} />
         <footer className="page-footer">MES CONVEYOR SORTING SYSTEM <span>•</span> BIN1 = lurus (PERFECT) <span>•</span> BIN2 = dibelokkan servo (DEFECT/INVALID)</footer>
       </main>
       {message && <div className="database-error">{message}</div>}

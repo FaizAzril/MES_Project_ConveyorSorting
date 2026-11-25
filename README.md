@@ -111,10 +111,10 @@ agar dashboard bisa dibuka dari perangkat lain di jaringan yang sama).
    selama rules masih terbuka. Setelah `firebase/database.rules.json` dipasang,
    ESP32 akan mendapat 401 sampai database secret diisi.
 3. Ukur waktu tempuh balok dari tengah ROI kamera ke lengan servo (uji U3), lalu
-   isi `TRAVEL_TIME_MS` (t = L / v). Untuk DEFECT, palang langsung keluar begitu
-   event diterima, bertahan sampai balok tiba ditambah
-   `DIVERT_HOLD_AFTER_ARRIVAL_MS` (1500 ms), lalu kembali ke HOME perlahan
-   selama `RETURN_DURATION_MS` (1000 ms). Sudut dan pulsa (`HOME_ANGLE` 90°,
+   isi `TRAVEL_TIME_MS` (t = L / v, sekarang 4000 ms). Untuk DEFECT, palang
+   langsung keluar begitu event diterima, bertahan sampai balok tiba ditambah
+   `DIVERT_HOLD_AFTER_ARRIVAL_MS` (1000 ms), jadi total ±5 detik setelah deteksi,
+   lalu kembali ke HOME perlahan selama `RETURN_DURATION_MS` (2000 ms). Sudut dan pulsa (`HOME_ANGLE` 90°,
    `DIVERT_ANGLE` 180°, 1000–2000 µs) diambil dari firmware serial lama yang sudah
    diuji di bench. Tetap periksa saat uji U4.
 4. Upload. Serial Monitor 115200 menampilkan event, aksi servo, dan status Wi-Fi.
@@ -159,6 +159,33 @@ ESP32 cukup membaca 5 event terbaru (`orderBy="$key"&limitToLast=5`).
 * **Sorting accuracy** = event yang wadah aktualnya benar / event yang sudah
   dikonfirmasi operator. Klik **BIN1/BIN2** di tabel riwayat sesuai wadah tempat
   balok benar-benar jatuh.
+* **OEE** = Availability × Performance × Quality (`server/oee.py`, panel OEE di
+  dashboard, disimpan ke `/session/oee`):
+  * Availability = waktu berjalan / waktu sesi. Waktu dihitung sebagai downtime
+    saat kamera mati, kalibrasi, atau ESP32 offline (heartbeat > 20 detik), dan
+    dicatat per alasan.
+  * Performance = (`IDEAL_CYCLE_TIME_S` × jumlah objek) / waktu berjalan. Setel
+    `IDEAL_CYCLE_TIME_S` di `config.py` ke waktu tercepat per objek yang mungkin
+    di line kalian.
+  * Quality = PERFECT / total objek pada sesi.
+
+## Sesi produksi dan riwayat
+
+Setiap kali `main.py` dijalankan, sesi produksi baru dimulai. Semua angka di
+bagian atas dashboard (jumlah inspeksi, distribusi, KPI, OEE, tabel inspeksi)
+mulai dari 0 dan hanya menghitung sesi ini. Data sesi sebelumnya tetap
+tersimpan di Firebase (`/detections` dan arsip `/sessions/{id}`, termasuk OEE
+akhirnya) dan tampil di bagian **Riwayat Produksi** paling bawah: ringkasan per
+sesi, tombol **Detail** untuk daftar inspeksinya, dan unduhan PDF/Excel per
+sesi. Tanpa Firebase, data lokal hilang saat program ditutup.
+
+## Export laporan
+
+Tombol **Export Laporan** di kanan atas dashboard: pilih **format** (PDF untuk
+dicetak/dilampirkan, Excel untuk diolah) dan **cakupan** (sesi ini, termasuk OEE
+dan downtime, atau semua data). Isi laporan: ringkasan produksi, KPI, OEE,
+downtime per alasan, dan detail setiap inspeksi. Endpoint langsung:
+`/api/report?format=pdf|xlsx&scope=session|all`.
 
 ## Test
 

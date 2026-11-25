@@ -135,6 +135,9 @@ class FirebaseSync:
 
     # ── public API (non-blocking) ─────────────────────────────────────────
     def start_session(self, session_id: str) -> None:
+        """New production session. /session is the current one; every session
+        is also archived under /sessions/{id} (start, stop, final OEE)."""
+        self._session_id = session_id
         self._put("session", {"id": session_id, "status": "running",
                               "startedAtMs": _now_ms(), "stoppedAtMs": None})
 
@@ -143,6 +146,10 @@ class FirebaseSync:
 
     def set_vision_status(self, status: str) -> None:
         self._put("vision_status", status)
+
+    def update_session_oee(self, oee: Dict[str, Any]) -> None:
+        """Store the session's OEE numbers under /session/oee."""
+        self._put("oee", dict(oee))
 
     def push_inspection(self, record: Dict[str, Any]) -> None:
         self._put("inspection", dict(record))
@@ -211,14 +218,20 @@ class FirebaseSync:
             try:
                 if kind == "session":
                     self._ref("session").set(payload)
+                    self._ref(f"sessions/{payload['id']}").set(payload)
                     # New session: clear the "last result" card (and legacy fields
                     # from the old green/non-green design).
                     self._ref("vision").set({"status": "online", "lastClass": "",
                                              "lastEventId": "", "redCoverage": 0})
                 elif kind == "session_stop":
                     self._ref("session").update(payload)
+                    self._ref(f"sessions/{payload['id']}").update(payload)
                 elif kind == "vision_status":
                     self._ref("vision").update({"status": payload})
+                elif kind == "oee":
+                    self._ref("session/oee").set(payload)
+                    if getattr(self, "_session_id", None):
+                        self._ref(f"sessions/{self._session_id}/oee").set(payload)
                 elif kind == "inspection":
                     self._write_inspection(payload)
                 elif kind == "confirm":

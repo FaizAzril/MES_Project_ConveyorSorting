@@ -179,6 +179,10 @@ class TestSystem(unittest.TestCase):
 
         state = self._get("/api/state")
         self.assertEqual(state["source"], "local")
+        self.assertEqual(state["sessionStats"], {"total": 3, "perfect": 1, "defect": 2, "invalid": 0})
+        self.assertEqual(state["history"], [])  # local mode: only the current session
+        hist = self._get(f"/api/history?session={self.pipeline.session_id}")
+        self.assertEqual(len(hist["events"]), 3)
         self.assertEqual(state["data"]["statistics"]["total"], 3)
         self.assertEqual(state["data"]["statistics"]["perfect"], 1)
         self.assertEqual(state["data"]["statistics"]["defect"], 2)
@@ -191,6 +195,26 @@ class TestSystem(unittest.TestCase):
         self.assertEqual(self._get("/api/state")["data"]["detections"][ids[0]]["actualBin"], "BIN1")
         self.assertFalse(self._post("/api/confirm", {"eventId": ids[0], "actualBin": "BIN9"})["ok"])
         self.assertFalse(self._post("/api/confirm", {"eventId": "../x", "actualBin": "BIN1"})["ok"])
+
+        # report export: PDF and Excel with the 3 inspections
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/report?format=pdf&scope=session",
+                                    timeout=10) as r:
+            self.assertEqual(r.headers["Content-Type"], "application/pdf")
+            self.assertIn(".pdf", r.headers["Content-Disposition"])
+            self.assertTrue(r.read().startswith(b"%PDF"))
+        with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/report?format=xlsx&scope=all",
+                                    timeout=10) as r:
+            body = r.read()
+        import io
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(body))
+        self.assertEqual(wb["Inspeksi"].max_row, 1 + 3)
+        summary = {row[0]: row[1] for row in wb["Ringkasan"].iter_rows(values_only=True) if row[0]}
+        self.assertEqual(summary["Total inspeksi"], 3)
+        self.assertEqual(summary["PERFECT"], 1)
+        self.assertEqual(summary["Sorting accuracy"], 1.0)  # 1 confirmed, correct (PERFECT in BIN1)
+        with self.assertRaises(urllib.error.HTTPError):
+            urllib.request.urlopen(f"http://127.0.0.1:{self.port}/api/report?format=doc", timeout=10)
 
         self.assertTrue(self._post("/api/control", {"action": "stop"})["ok"])
         self.assertFalse(self._get("/api/state")["camera"]["running"])

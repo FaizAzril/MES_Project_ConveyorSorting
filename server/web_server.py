@@ -60,12 +60,38 @@ def record_to_db(record: Dict[str, Any]) -> Dict[str, Any]:
 class AppContext:
     """Glue between the HTTP handler, the CV pipeline and Firebase."""
 
-    def __init__(self, pipeline, firebase):
+    def __init__(self, pipeline, firebase, oee=None):
         self.pipeline = pipeline
         self.firebase = firebase
+        self.oee = oee
 
     def state(self) -> Dict[str, Any]:
+        from . import report as rpt
         camera = self.pipeline.snapshot()
+        source, data = self.data(camera)
+        current = (data.get("session") or {}).get("id") or self.pipeline.session_id
+        # Past sessions (summaries only); the dashboard's live numbers are the
+        # current session's, starting from 0 at every start of main.py.
+        history = rpt.session_summaries(data, exclude_id=current)
+        counts = self.pipeline.counts
+        session_stats = {"total": counts.get("total", 0), "perfect": counts.get("perfect", 0),
+                         "defect": counts.get("defect", 0), "invalid": counts.get("invalid", 0)}
+        detections = data.get("detections") or {}
+        if len(detections) > 200:  # newest first by time-ordered key
+            data["detections"] = {k: detections[k] for k in sorted(detections)[-200:]}
+        return {
+            "source": source,
+            "camera": camera,
+            "firebase": {"status": self.firebase.status, "error": self.firebase.last_error},
+            "oee": self.oee.snapshot() if self.oee else None,
+            "sessionStats": session_stats,
+            "history": history,
+            "data": data,
+        }
+
+    def data(self, camera: Optional[Dict[str, Any]] = None):
+        """All production data (untrimmed): (source, data) from Firebase or local."""
+        camera = camera or self.pipeline.snapshot()
         mirror = self.firebase.mirror() if self.firebase.enabled else None
         if mirror is not None:
             data = mirror
@@ -88,15 +114,7 @@ class AppContext:
                 "detections": {r["event_id"]: record_to_db(r) for r in records},
             }
             source = "local"
-        detections = data.get("detections") or {}
-        if len(detections) > 200:  # newest first by time-ordered key
-            data["detections"] = {k: detections[k] for k in sorted(detections)[-200:]}
-        return {
-            "source": source,
-            "camera": camera,
-            "firebase": {"status": self.firebase.status, "error": self.firebase.last_error},
-            "data": data,
-        }
+        return source, data
 
     def control(self, action: str) -> Dict[str, Any]:
         p = self.pipeline
@@ -168,7 +186,54 @@ def make_handler(ctx: AppContext):
                 return self._json(ctx.state())
             if path == "/video_feed":
                 return self._stream()
+            if path == "/api/report":
+                return self._report()
+            if path == "/api/history":
+                return self._history()
             return self._static(path)
+
+        def _history(self):
+            """Inspections of one past session: /api/history?session=<id>."""
+            from urllib.parse import parse_qs, urlsplit
+            from . import report as rpt
+            sid = (parse_qs(urlsplit(self.path).query).get("session") or [""])[0]
+            if sid == "(tanpa sesi)":
+                sid = ""
+            elif not EVENT_ID_RE.match(sid):
+                return self._json({"ok": False, "error": "session tidak valid"}, 400)
+            _, data = ctx.data()
+            return self._json({"ok": True, "sessionId": sid, "events": rpt.events_of(data, sid)})
+
+        def _report(self):
+            from urllib.parse import parse_qs, urlsplit
+            from . import report as rpt
+            query = parse_qs(urlsplit(self.path).query)
+            fmt = (query.get("format") or ["pdf"])[0].lower()
+            scope = (query.get("scope") or ["session"])[0].lower()
+            session_id = (query.get("session") or [None])[0]
+            if fmt not in ("pdf", "xlsx") or scope not in rpt.SCOPES:
+                return self._json({"ok": False, "error": "format harus pdf/xlsx, scope session/all"}, 400)
+            if session_id == "(tanpa sesi)":
+                session_id = ""
+            elif session_id is not None and not EVENT_ID_RE.match(session_id):
+                return self._json({"ok": False, "error": "session tidak valid"}, 400)
+            try:
+                data = rpt.collect(ctx, scope, session_id)
+                body = rpt.to_pdf(data) if fmt == "pdf" else rpt.to_xlsx(data)
+            except ImportError:
+                return self._json({"ok": False, "error": "Install reportlab dan openpyxl (pip install -r requirements.txt)"}, 500)
+            except Exception as exc:
+                _logger.exception("Report export failed")
+                return self._json({"ok": False, "error": f"Gagal membuat laporan: {exc}"}, 500)
+            ctype = ("application/pdf" if fmt == "pdf" else
+                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Disposition", f'attachment; filename="{rpt.filename(data, fmt)}"')
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
 
         def do_POST(self):
             path = self.path.split("?", 1)[0]
